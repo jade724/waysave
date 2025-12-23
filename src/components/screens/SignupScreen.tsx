@@ -94,7 +94,7 @@ export default function SignupScreen({
             disabled:opacity-60
           "
         >
-          {loading ? "Creating account..." : "Create Account"}
+          {loading ? "Creating the account..." : "Create Account"}
         </button>
       </div>
 
