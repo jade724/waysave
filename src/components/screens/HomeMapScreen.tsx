@@ -1,13 +1,14 @@
 // HomeMapScreen.tsx
 
 import { useEffect, useState } from "react";
-import { Fuel, Zap, Navigation, Filter } from "lucide-react";
+import { Fuel, Zap, Navigation, Filter, LogOut } from "lucide-react";
 
 import GoogleMapBackground from "../map/GoogleMapBackground";
 import MapRecenterButton from "../map/MapRecenterButton";
 
 import { fetchEVStations } from "../../api/openChargeMap";
 import type { Station } from "../../App";
+import { useAuth } from "../../lib/authContext";
 
 interface HomeMapScreenProps {
   onFiltersClick: () => void;
@@ -20,6 +21,9 @@ export default function HomeMapScreen({
   onStationClick,
   onPinSelect,
 }: HomeMapScreenProps) {
+  const { user, signOut } = useAuth();
+  const [signingOut, setSigningOut] = useState(false);
+
   const [activeTab, setActiveTab] = useState<"fuel" | "ev">("fuel");
 
   const [userLocation, setUserLocation] = useState<{
@@ -30,6 +34,17 @@ export default function HomeMapScreen({
 
   const [evStations, setEvStations] = useState<any[]>([]);
   const [loadingEV, setLoadingEV] = useState(false);
+
+  const handleLogout = async () => {
+    try {
+      setSigningOut(true);
+      await signOut();
+    } catch (e) {
+      console.error("Error signing out:", e);
+    } finally {
+      setSigningOut(false);
+    }
+  };
 
   // Get location
   useEffect(() => {
@@ -130,7 +145,7 @@ export default function HomeMapScreen({
       {/* Header */}
       <div className="px-5 pt-6 pb-4">
         <div className="flex items-center justify-between mb-4">
-          <div>
+          <div className="min-w-0">
             <h1 className="text-white text-2xl font-semibold tracking-tight">
               WaySave
             </h1>
@@ -138,18 +153,40 @@ export default function HomeMapScreen({
               Find the best {activeTab === "fuel" ? "fuel" : "EV"} stations
               nearby
             </p>
+            {user?.email && (
+              <p className="text-white/30 text-[10px] mt-1 truncate max-w-[240px]">
+                Signed in as {user.email}
+              </p>
+            )}
           </div>
 
-          <button
-            onClick={onFiltersClick}
-            className="
-              p-2 rounded-2xl bg-[#1A1D26]
-              border border-white/10 hover:border-white/25
-              transition
-            "
-          >
-            <Filter className="w-5 h-5 text-white" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleLogout}
+              disabled={signingOut}
+              title="Log out"
+              className="
+                p-2 rounded-2xl bg-[#1A1D26]
+                border border-white/10 hover:border-white/25
+                transition
+                disabled:opacity-60
+              "
+            >
+              <LogOut className="w-5 h-5 text-white" />
+            </button>
+
+            <button
+              onClick={onFiltersClick}
+              title="Filters"
+              className="
+                p-2 rounded-2xl bg-[#1A1D26]
+                border border-white/10 hover:border-white/25
+                transition
+              "
+            >
+              <Filter className="w-5 h-5 text-white" />
+            </button>
+          </div>
         </div>
 
         {/* Fuel / EV toggle */}
@@ -267,9 +304,7 @@ export default function HomeMapScreen({
 
                 <div>
                   <div className="flex items-center gap-2 mb-1">
-                    <h3 className="text-white text-sm font-medium">
-                      {s.name}
-                    </h3>
+                    <h3 className="text-white text-sm font-medium">{s.name}</h3>
                     {s.type === "fuel" && s.id === 1 && (
                       <span
                         className="

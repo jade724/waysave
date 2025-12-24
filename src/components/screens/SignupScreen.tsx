@@ -1,6 +1,6 @@
 // SignupScreen.tsx
 import { useState } from "react";
-import { signUp } from "../../lib/auth";
+import { useAuth } from "../../lib/authContext";
 
 interface SignupScreenProps {
   onBack: () => void;
@@ -11,21 +11,36 @@ export default function SignupScreen({
   onBack,
   onSignupSuccess,
 }: SignupScreenProps) {
+  const { signUp } = useAuth();
+
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
 
   const handleSignup = async () => {
     setError(null);
+    setInfo(null);
     setLoading(true);
 
     try {
-      await signUp(email, password);
+      const result = await signUp(email, password, fullName);
+
+      if (result.needsEmailConfirmation) {
+        setInfo(
+          "Account created! Please check your email to confirm your account, then come back and log in."
+        );
+        return;
+      }
+
       onSignupSuccess();
-    } catch (err: any) {
-      setError(err.message || "Signup failed");
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Signup failed. Please try again.";
+      setError(message);
     } finally {
       setLoading(false);
     }
@@ -78,9 +93,8 @@ export default function SignupScreen({
           type="password"
         />
 
-        {error && (
-          <p className="text-red-400 text-sm text-center">{error}</p>
-        )}
+        {error && <p className="text-red-400 text-sm text-center">{error}</p>}
+        {info && <p className="text-white/60 text-xs text-center">{info}</p>}
 
         <button
           onClick={handleSignup}
@@ -94,7 +108,7 @@ export default function SignupScreen({
             disabled:opacity-60
           "
         >
-          {loading ? "Creating the account..." : "Create Account"}
+          {loading ? "Creating account..." : "Create Account"}
         </button>
       </div>
 
@@ -102,4 +116,3 @@ export default function SignupScreen({
     </div>
   );
 }
-

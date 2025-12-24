@@ -1,6 +1,6 @@
 // LoginScreen.tsx
 import { useState } from "react";
-import { signIn } from "../../lib/auth";
+import { useAuth } from "../../lib/authContext";
 
 interface LoginScreenProps {
   onLogin: () => void;
@@ -8,6 +8,8 @@ interface LoginScreenProps {
 }
 
 export default function LoginScreen({ onLogin, onSignup }: LoginScreenProps) {
+  const { signIn } = useAuth();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -20,8 +22,10 @@ export default function LoginScreen({ onLogin, onSignup }: LoginScreenProps) {
     try {
       await signIn(email, password);
       onLogin();
-    } catch (err: any) {
-      setError(err.message || "Login failed");
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Login failed. Please try again.";
+      setError(message);
     } finally {
       setLoading(false);
     }
@@ -57,9 +61,7 @@ export default function LoginScreen({ onLogin, onSignup }: LoginScreenProps) {
           type="password"
         />
 
-        {error && (
-          <p className="text-red-400 text-sm text-center">{error}</p>
-        )}
+        {error && <p className="text-red-400 text-sm text-center">{error}</p>}
 
         <button
           onClick={handleLogin}
@@ -97,10 +99,7 @@ export default function LoginScreen({ onLogin, onSignup }: LoginScreenProps) {
       {/* Sign Up link */}
       <div className="text-center mt-8 text-sm">
         <span className="text-white/50">Don&apos;t have an account? </span>
-        <button
-          onClick={onSignup}
-          className="text-[#00E0C6] font-semibold"
-        >
+        <button onClick={onSignup} className="text-[#00E0C6] font-semibold">
           Sign Up
         </button>
       </div>

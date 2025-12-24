@@ -10,13 +10,19 @@ import App from "./App";
 // PWA service worker registration (Vite PWA plugin)
 import { registerSW } from "virtual:pwa-register";
 
+import { AuthProvider } from "./lib/authContext";
+import AuthErrorBoundary from "./components/AuthErrorBoundary";
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    <AuthProvider>
+      <AuthErrorBoundary>
+        <App />
+      </AuthErrorBoundary>
+    </AuthProvider>
   </React.StrictMode>
 );
 
-// Register service worker (minimal, safe setup)
 registerSW({
   onNeedRefresh() {
     console.log("New content available, please refresh.");
