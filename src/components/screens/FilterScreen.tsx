@@ -1,30 +1,19 @@
-// Improved FilterScreen.tsx
-// Fully redesigned for premium UX/UI
-
 import { X, Fuel, Zap } from "lucide-react";
 import { useState } from "react";
+import type { UserPreferences } from "../../lib/preferences";
 
 interface FilterScreenProps {
+  initial: UserPreferences;
+  onApply: (next: UserPreferences) => void;
   onClose: () => void;
 }
 
-export default function FilterScreen({ onClose }: FilterScreenProps) {
-  const [fuelType, setFuelType] = useState<"diesel" | "unleaded" | "both">(
-    "unleaded"
-  );
-
-  const [connectors, setConnectors] = useState({
-    CCS: true,
-    CHAdeMO: false,
-    Type2: true,
-  });
-
-  const [preference, setPreference] = useState<"fastest" | "cheapest">(
-    "cheapest"
-  );
-
-  const [priceRange, setPriceRange] = useState(50);
-  const [maxDistance, setMaxDistance] = useState(30);
+export default function FilterScreen({ initial, onApply, onClose }: FilterScreenProps) {
+  const [fuelType, setFuelType] = useState(initial.fuelType);
+  const [connectors, setConnectors] = useState(initial.connectors);
+  const [preference, setPreference] = useState(initial.preference);
+  const [priceRange, setPriceRange] = useState(initial.priceSensitivity);
+  const [maxDistance, setMaxDistance] = useState(initial.maxDistanceKm);
 
   const toggleConnector = (key: keyof typeof connectors) => {
     setConnectors((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -32,7 +21,6 @@ export default function FilterScreen({ onClose }: FilterScreenProps) {
 
   return (
     <div className="relative w-full h-full bg-[#0D0F14] flex flex-col pb-40 px-6 overflow-y-auto">
-
       {/* Header */}
       <div className="sticky top-0 z-30 bg-[#0D0F14]/95 backdrop-blur-md pb-4 pt-6 mb-6 border-b border-white/5 flex items-center justify-between">
         <button
@@ -43,8 +31,7 @@ export default function FilterScreen({ onClose }: FilterScreenProps) {
         </button>
 
         <h1 className="text-white text-lg font-semibold">Filters</h1>
-
-        <div className="w-8" /> {/* Right-side spacer */}
+        <div className="w-8" />
       </div>
 
       {/* FUEL TYPE */}
@@ -53,12 +40,11 @@ export default function FilterScreen({ onClose }: FilterScreenProps) {
         <p className="text-white/40 text-xs mb-3">Choose what fuel you need.</p>
 
         <div className="bg-[#111418] rounded-2xl border border-white/10 p-4 space-y-3 shadow-[0_0_20px_-8px_rgba(0,0,0,0.7)]">
-
           <div className="grid grid-cols-3 gap-3">
-            {["unleaded", "diesel", "both"].map((type) => (
+            {(["unleaded", "diesel", "both"] as const).map((type) => (
               <button
                 key={type}
-                onClick={() => setFuelType(type as any)}
+                onClick={() => setFuelType(type)}
                 className={`
                   p-4 rounded-2xl flex flex-col items-center gap-2 transition border
                   ${
@@ -82,7 +68,6 @@ export default function FilterScreen({ onClose }: FilterScreenProps) {
         <p className="text-white/40 text-xs mb-3">Select compatible connectors.</p>
 
         <div className="bg-[#111418] rounded-2xl border border-white/10 p-4 space-y-3 shadow-[0_0_20px_-8px_rgba(0,0,0,0.7)]">
-
           {[
             { key: "CCS", label: "CCS (Combined Fast Charge)" },
             { key: "CHAdeMO", label: "CHAdeMO" },
@@ -127,10 +112,10 @@ export default function FilterScreen({ onClose }: FilterScreenProps) {
 
         <div className="bg-[#111418] rounded-2xl border border-white/10 p-4 shadow-[0_0_20px_-8px_rgba(0,0,0,0.7)]">
           <div className="grid grid-cols-2 gap-3">
-            {["cheapest", "fastest"].map((type) => (
+            {(["cheapest", "nearest"] as const).map((type) => (
               <button
                 key={type}
-                onClick={() => setPreference(type as any)}
+                onClick={() => setPreference(type)}
                 className={`
                   p-4 rounded-xl text-sm font-medium border transition
                   ${
@@ -149,8 +134,8 @@ export default function FilterScreen({ onClose }: FilterScreenProps) {
 
       {/* PRICE SLIDER */}
       <section className="mb-6">
-        <h2 className="text-white/90 font-medium mb-1">Price Range</h2>
-        <p className="text-white/40 text-xs mb-3">Filter by price sensitivity.</p>
+        <h2 className="text-white/90 font-medium mb-1">Price Sensitivity</h2>
+        <p className="text-white/40 text-xs mb-3">Higher = stricter filtering.</p>
 
         <div className="bg-[#111418] rounded-2xl border border-white/10 p-4 shadow-[0_0_20px_-8px_rgba(0,0,0,0.7)]">
           <input
@@ -183,16 +168,19 @@ export default function FilterScreen({ onClose }: FilterScreenProps) {
         </div>
       </section>
 
-      {/* STICKY FOOTER BUTTONS */}
+      {/* FOOTER BUTTONS */}
       <div className="mt-10 pb-2 w-full flex gap-3">
         <button
           onClick={() => {
-            // Reset defaults
-            setFuelType("unleaded");
-            setPreference("cheapest");
-            setPriceRange(50);
-            setMaxDistance(30);
-            setConnectors({ CCS: true, CHAdeMO: false, Type2: true });
+            onApply({
+              ...initial,
+              fuelType: "unleaded",
+              preference: "cheapest",
+              priceSensitivity: 50,
+              maxDistanceKm: 30,
+              connectors: { CCS: true, CHAdeMO: false, Type2: true },
+            });
+            onClose();
           }}
           className="flex-1 py-3 rounded-2xl bg-[#1A1D26] text-white/70 border border-white/10"
         >
@@ -200,7 +188,17 @@ export default function FilterScreen({ onClose }: FilterScreenProps) {
         </button>
 
         <button
-          onClick={onClose}
+          onClick={() => {
+            onApply({
+              ...initial,
+              fuelType,
+              connectors,
+              preference,
+              priceSensitivity: priceRange,
+              maxDistanceKm: maxDistance,
+            });
+            onClose();
+          }}
           className="
             flex-1 py-3 rounded-2xl
             bg-gradient-to-r from-[#00E0C6] to-[#0097FF]
