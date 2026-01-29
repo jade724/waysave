@@ -37,6 +37,26 @@ export async function fetchUKFuelStationsFromRetailerUrl(
   return [];
 }
 
+// src/api/ukFuelOpenData.ts
+
+export const fuelData = [
+  {
+    id: 1,
+    name: "Circle K",
+    latitude: 53.3498,
+    longitude: -6.2603,
+    price: 1.55,
+  },
+  {
+    id: 2,
+    name: "Shell",
+    latitude: 53.347,
+    longitude: -6.259,
+    price: 1.59,
+  },
+];
+
+
 export function pickPriceEuroPerL(station: UKFuelStation, fuelType: "diesel" | "unleaded") {
   // UK feeds are usually in pence per litre
   const prices = station.prices || {};

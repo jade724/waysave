@@ -1,17 +1,18 @@
 // src/components/screens/HomeMapScreen.tsx
 
-import { useEffect, useState, useMemo } from "react";
-import { Fuel, Filter, Zap } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Fuel, Zap, Filter } from "lucide-react";
 
 import GoogleMapBackground from "../map/GoogleMapBackground";
-import MapRecenterButton from "../map/MapRecenterButton";
+import StationCard from "../shared/StationCard";
 
 import { fetchEVStations } from "../../api/openChargeMap";
+import { loadFuelStations } from "../../api/fuelStations";
 import { calculateDistanceKm } from "../../lib/distance";
 
 import type { Station } from "../../App";
-import { useAuth } from "../../lib/authContext";
 import type { UserPreferences } from "../../lib/preferences";
+import { useAuth } from "../../lib/authContext";
 
 interface Props {
   prefs: UserPreferences;
@@ -19,6 +20,44 @@ interface Props {
   onFiltersClick: () => void;
   onStationClick: (station: Station) => void;
   onPinSelect: (station: Station) => void;
+}
+
+/**
+ * Apply distance filtering and ranking based on user preferences.
+ * This logic is shared by both the map pins and the station list.
+ */
+function rankStations(
+  stations: Station[],
+  prefs: UserPreferences
+): Station[] {
+  return stations
+    .filter(
+      (s) =>
+        s.distance_km != null &&
+        s.distance_km <= prefs.maxDistanceKm
+    )
+    .sort((a, b) => {
+      // Nearest stations first
+      if (prefs.preference === "nearest") {
+        return (a.distance_km ?? 0) - (b.distance_km ?? 0);
+      }
+
+      // Cheapest fuel (price weighted more than distance)
+      if (prefs.preference === "cheapest") {
+        const aScore =
+          (a.price_value ?? 999) * 0.7 + (a.distance_km ?? 0) * 0.3;
+        const bScore =
+          (b.price_value ?? 999) * 0.7 + (b.distance_km ?? 0) * 0.3;
+        return aScore - bScore;
+      }
+
+      // Fastest (simple proxy: distance)
+      if (prefs.preference === "fastest") {
+        return (a.distance_km ?? 0) - (b.distance_km ?? 0);
+      }
+
+      return 0;
+    });
 }
 
 export default function HomeMapScreen({
@@ -30,9 +69,12 @@ export default function HomeMapScreen({
 }: Props) {
   const { profile } = useAuth();
 
-  // Active tab (fuel / EV)
-  const [activeTab, setActiveTab] = useState<"fuel" | "ev">(prefs.activeTab);
+  // Active tab is driven by preferences
+  const [activeTab, setActiveTab] = useState<"fuel" | "ev">(
+    prefs.activeTab
+  );
 
+  // Keep preferences in sync when tab changes
   useEffect(() => {
     if (prefs.activeTab !== activeTab) {
       onPrefsChange({ ...prefs, activeTab });
@@ -57,13 +99,13 @@ export default function HomeMapScreen({
   }, []);
 
   // -----------------------------
-  // EV stations (real data)
+  // EV stations
   // -----------------------------
   const [evStations, setEvStations] = useState<Station[]>([]);
   const [loadingEV, setLoadingEV] = useState(false);
 
   useEffect(() => {
-    async function loadEVStations() {
+    async function loadEV() {
       setLoadingEV(true);
 
       const data = await fetchEVStations(
@@ -76,14 +118,6 @@ export default function HomeMapScreen({
         const lat = ev.AddressInfo.Latitude;
         const lng = ev.AddressInfo.Longitude;
 
-      const d = calculateDistanceKm(
-        userLocation.lat,
-        userLocation.lng,
-        lat,
-        lng
-
-      );
-
         return {
           id: String(ev.ID),
           externalId: String(ev.ID),
@@ -91,9 +125,12 @@ export default function HomeMapScreen({
           lat,
           lng,
           type: "ev",
-          distance_km: d,
-          score: d,
-
+          distance_km: calculateDistanceKm(
+            userLocation.lat,
+            userLocation.lng,
+            lat,
+            lng
+          ),
           raw: ev,
         };
       });
@@ -102,66 +139,62 @@ export default function HomeMapScreen({
       setLoadingEV(false);
     }
 
-    loadEVStations();
+    loadEV();
   }, [userLocation, prefs.maxDistanceKm]);
 
   // -----------------------------
-  // Fuel stations (placeholder for now)
+  // Fuel stations
   // -----------------------------
-  const fuelStations: Station[] = [];
+  const [fuelStations, setFuelStations] = useState<Station[]>([]);
 
-  // -----------------------------
-  // STEP 1: Distance-based sorting
-  // -----------------------------
-  const visibleStations = useMemo(() => {
-  const list = activeTab === "fuel" ? fuelStations : evStations;
+  useEffect(() => {
+    async function loadFuel() {
+      const data = await loadFuelStations(
+        userLocation.lat,
+        userLocation.lng
+      );
 
-  // 1. Apply filters first
-  const filtered = list.filter(
-    (s) => s.distance_km != null && s.distance_km <= prefs.maxDistanceKm
-  );
-
-  // 2. Rank based on user preference
-  const ranked = [...filtered].sort((a, b) => {
-    if (a.score == null) return 1;
-    if (b.score == null) return -1;
-
-    if (prefs.preference === "nearest") {
-      return a.distance_km! - b.distance_km!;
+      setFuelStations(data);
     }
 
-    // "cheapest" (for now still distance-based for EV)
-    return a.score - b.score;
-  });
+    loadFuel();
+  }, [userLocation]);
 
-  return ranked;
-}, [activeTab, evStations, fuelStations, prefs]);
+  // -----------------------------
+  // Ranked + filtered stations
+  // -----------------------------
+  const rankedStations = useMemo(() => {
+    const base =
+      activeTab === "fuel" ? fuelStations : evStations;
 
-
-  const bestStationId = 
-    visibleStations.length > 0 ? visibleStations[0].id : null;
-
+    return rankStations(base, prefs);
+  }, [activeTab, fuelStations, evStations, prefs]);
 
   return (
     <div className="w-full h-full flex flex-col bg-[#0D0F14]">
       {/* Header */}
       <div className="px-5 pt-6 pb-4">
-        <h1 className="text-white text-2xl font-semibold">WaySave</h1>
+        <div className="flex justify-between items-start">
+          <div>
+            <h1 className="text-white text-2xl font-semibold">
+              WaySave
+            </h1>
+            {profile?.full_name && (
+              <p className="text-white/40 text-xs">
+                Welcome, {profile.full_name}
+              </p>
+            )}
+          </div>
 
-        {profile?.full_name && (
-          <p className="text-white/40 text-xs">
-            Welcome, {profile.full_name}
-          </p>
-        )}
-
-        {/* Filters button */}
           <button
             onClick={onFiltersClick}
-            className="p-2 rounded-xl bg-[#1A1D26] border border-white/10"
+            className="icon-button"
           >
-            <Filter className="w-5 h-5 text-white" />
+            <Filter className="w-5 h-5" />
           </button>
+        </div>
 
+        {/* Tabs */}
         <div className="flex gap-2 mt-4">
           <button
             onClick={() => setActiveTab("fuel")}
@@ -181,59 +214,32 @@ export default function HomeMapScreen({
         </div>
       </div>
 
-      
-
       {/* Map */}
-      <div className="relative px-5">
+      <div className="px-5">
         <GoogleMapBackground
           userLocation={userLocation}
-          markers={visibleStations}
+          markers={rankedStations}
           zoom={13}
           onPinSelect={onPinSelect}
-        />
-
-        {/* Recenter map on user */}
-        <MapRecenterButton
-          onPress={() => setUserLocation({ ...userLocation })}
         />
       </div>
 
       {/* Station list */}
-      <div className="flex-1 px-5 py-4 overflow-y-auto">
+      <div className="flex-1 px-5 py-4 overflow-y-auto space-y-3">
         {loadingEV && activeTab === "ev" && (
           <p className="text-white/50 text-sm">
             Loading EV stations…
           </p>
         )}
 
-        {!loadingEV && visibleStations.length === 0 && (
-          <p className="text-white/40 text-sm">
-            No stations found.
-          </p>
-        )}
-
-        {/* Visible station */}
-        {visibleStations.map((station) => (
-          <button
+        {rankedStations.map((station, index) => (
+          <StationCard
             key={station.id}
-            onClick={() => onStationClick(station)}
-            className="station-card"
-          >
-            <h3 className="text-white font-medium truncate">
-              {station.name}
-            </h3>
-          {/* Best Station */}
-          {station.id === bestStationId && (
-            <span className="best-badge">Best value</span>
-          )}
-
-
-            {station.distance_km != null && (
-              <p className="text-xs text-white/50">
-                {station.distance_km.toFixed(1)} km away
-              </p>
-            )}
-          </button>
+            station={station}
+            index={index}
+            prefs={prefs}
+            onPress={() => onStationClick(station)}
+          />
         ))}
       </div>
     </div>

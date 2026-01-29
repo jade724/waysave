@@ -1,22 +1,16 @@
-// GoogleMapBackground.tsx
-// Fully polished version for your WaySave app
-
 import { useEffect, useRef } from "react";
 import type { Station } from "../../App";
 
-// Load API key from .env
 const GOOGLE_MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
 
-// Improved Figma-style dark theme
-const darkMapStyles: google.maps.MapTypeStyle[] = [
+/**
+ * Dark map style to match app UI
+ */
+const DARK_MAP_STYLE: google.maps.MapTypeStyle[] = [
   { elementType: "geometry", stylers: [{ color: "#0D0F14" }] },
-  { elementType: "labels.text.fill", stylers: [{ color: "#8ea0b5" }] },
-  { elementType: "labels.text.stroke", stylers: [{ color: "#000" }] },
+  { elementType: "labels.text.stroke", stylers: [{ color: "#0D0F14" }] },
+  { elementType: "labels.text.fill", stylers: [{ color: "#8A8A8A" }] },
 
-  {
-    featureType: "poi",
-    stylers: [{ visibility: "off" }],
-  },
   {
     featureType: "road",
     elementType: "geometry",
@@ -24,122 +18,150 @@ const darkMapStyles: google.maps.MapTypeStyle[] = [
   },
   {
     featureType: "road",
-    elementType: "labels.text.fill",
-    stylers: [{ color: "#aaa" }],
+    elementType: "geometry.stroke",
+    stylers: [{ color: "#0D0F14" }],
   },
+  {
+    featureType: "road",
+    elementType: "labels.text.fill",
+    stylers: [{ color: "#9CA3AF" }],
+  },
+
   {
     featureType: "water",
-    stylers: [{ color: "#07090d" }],
+    elementType: "geometry",
+    stylers: [{ color: "#0B1C26" }],
   },
+
+  {
+    featureType: "poi",
+    elementType: "geometry",
+    stylers: [{ color: "#12141B" }],
+  },
+  {
+    featureType: "poi",
+    elementType: "labels.text.fill",
+    stylers: [{ color: "#6B7280" }],
+  },
+
   {
     featureType: "transit",
-    stylers: [{ visibility: "off" }],
+    elementType: "geometry",
+    stylers: [{ color: "#12141B" }],
   },
+
   {
     featureType: "administrative",
-    stylers: [{ visibility: "off" }],
+    elementType: "geometry.stroke",
+    stylers: [{ color: "#1F2937" }],
   },
 ];
 
 interface Props {
   userLocation: { lat: number; lng: number };
   markers: Station[];
-  zoom: number;
-  className?: string;
+  zoom?: number;
   onPinSelect: (station: Station) => void;
+}
+
+/**
+ * Load Google Maps once globally
+ */
+let googleMapsPromise: Promise<void> | null = null;
+
+function loadGoogleMaps(): Promise<void> {
+  if (window.google?.maps) return Promise.resolve();
+
+  if (!googleMapsPromise) {
+    googleMapsPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_KEY}`;
+      script.async = true;
+      script.defer = true;
+      script.onload = () => resolve();
+      script.onerror = reject;
+      document.head.appendChild(script);
+    });
+  }
+
+  return googleMapsPromise;
 }
 
 export default function GoogleMapBackground({
   userLocation,
   markers,
-  zoom,
-  className = "",
+  zoom = 13,
   onPinSelect,
 }: Props) {
   const mapRef = useRef<HTMLDivElement | null>(null);
-  const map = useRef<google.maps.Map | null>(null);
-
-  // Load the Google Maps script once
-  const loadGoogleMaps = (): Promise<void> => {
-    return new Promise((resolve) => {
-      if (window.google) return resolve();
-
-      const script = document.createElement("script");
-      script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_KEY}`;
-      script.async = true;
-      script.onload = () => resolve();
-      document.body.appendChild(script);
-    });
-  };
+  const mapInstance = useRef<google.maps.Map | null>(null);
+  const markerRefs = useRef<google.maps.Marker[]>([]);
 
   useEffect(() => {
-    let mounted = true;
+    let cancelled = false;
 
     loadGoogleMaps().then(() => {
-      if (!mounted) return;
+      if (cancelled || !mapRef.current) return;
 
-      // Initialize the map once
-      if (!map.current && mapRef.current) {
-        map.current = new google.maps.Map(mapRef.current, {
+      // Create map once
+      if (!mapInstance.current) {
+        mapInstance.current = new google.maps.Map(mapRef.current, {
           center: userLocation,
           zoom,
           disableDefaultUI: true,
-          styles: darkMapStyles,
+          styles: DARK_MAP_STYLE,
         });
       }
 
-      if (!map.current) return;
+      const map = mapInstance.current;
+      map.setCenter(userLocation);
 
-      // Center map on user
-      map.current.setCenter(userLocation);
+      // Clear old markers
+      markerRefs.current.forEach((m) => m.setMap(null));
+      markerRefs.current = [];
 
-      // ----- Remove old markers -----
-      (map.current as any)._markers?.forEach((m: google.maps.Marker) =>
-        m.setMap(null)
+      // User location marker
+      markerRefs.current.push(
+        new google.maps.Marker({
+          position: userLocation,
+          map,
+          icon: {
+            url: "/pins/user.png",
+            scaledSize: new google.maps.Size(36, 36),
+          },
+          zIndex: 1000,
+        })
       );
-      (map.current as any)._markers = [];
 
-      // ----- USER MARKER -----
-      const userMarker = new google.maps.Marker({
-        position: userLocation,
-        map: map.current,
-        zIndex: 999,
-        icon: {
-          url: "/pins/user.png", // You must add this file
-          scaledSize: new google.maps.Size(22, 22),
-        },
-      });
-
-      (map.current as any)._markers.push(userMarker);
-
-      // ----- STATION MARKERS -----
+      // Station markers
       markers.forEach((station) => {
         const iconUrl =
-          station.type === "fuel"
-            ? "/pins/fuel-pin.png"
-            : "/pins/ev-pin.png";
+          station.type === "ev"
+            ? "/pins/ev-pin.png"
+            : "/pins/fuel-pin.png";
 
         const marker = new google.maps.Marker({
           position: { lat: station.lat, lng: station.lng },
-          map: map.current!,
+          map,
           icon: {
             url: iconUrl,
-            scaledSize: new google.maps.Size(46, 46),
+            scaledSize: new google.maps.Size(36, 36),
           },
         });
 
-        marker.addListener("click", () => {
-          onPinSelect(station);
-        });
-
-        (map.current as any)._markers.push(marker);
+        marker.addListener("click", () => onPinSelect(station));
+        markerRefs.current.push(marker);
       });
     });
 
     return () => {
-      mounted = false;
+      cancelled = true;
     };
-  }, [userLocation, markers, zoom]);
+  }, [userLocation, markers, zoom, onPinSelect]);
 
-  return <div ref={mapRef} className={`w-full h-full ${className}`} />;
+  return (
+    <div className="w-full h-64 rounded-2xl overflow-hidden">
+      <div ref={mapRef} className="w-full h-full" />
+    </div>
+  );
 }

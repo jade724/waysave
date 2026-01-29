@@ -159,7 +159,7 @@ export default function FilterScreen({ initial, onApply, onClose }: FilterScreen
           <input
             type="range"
             value={maxDistance}
-            min={1}
+            min={0.1}
             max={50}
             onChange={(e) => setMaxDistance(Number(e.target.value))}
             className="w-full accent-[#00E0C6] cursor-pointer"
