@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { Session, User } from "@supabase/supabase-js";
+import type { PostgrestError, Session, User } from "@supabase/supabase-js";
 import { supabase } from "./supabaseClient";
 import type { UserPreferences } from "./preferences";
 
@@ -96,7 +96,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     // Ignore duplicate insert (race condition)
     if (error) {
-      const code = (error as any).code as string | undefined;
+      const code = (error as PostgrestError).code;
       if (code !== "23505") throw error;
     }
   }, []);
@@ -272,6 +272,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
 /* ---------- Hook ---------- */
 
+/** Consumer hook for {@link AuthProvider}. */
+// Fast refresh expects one component export per file; the hook is intentionally co-located with the provider.
+// eslint-disable-next-line react-refresh/only-export-components -- useAuth must live beside AuthProvider
 export function useAuth(): AuthContextValue {
   const ctx = useContext(AuthContext);
   if (!ctx) {

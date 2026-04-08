@@ -5,12 +5,13 @@ export default function AuthErrorBoundary({ children }: { children: ReactNode })
   const { loading } = useAuth();
   const [timedOut, setTimedOut] = useState(false);
 
+  // Clear timeout UI when auth resolves (adjust state during render; avoids setState-in-effect lint).
+  if (!loading && timedOut) {
+    setTimedOut(false);
+  }
+
   useEffect(() => {
-    // If auth finishes, clear any previous timeout state
-    if (!loading) {
-      setTimedOut(false);
-      return;
-    }
+    if (!loading) return;
 
     const t = window.setTimeout(() => {
       setTimedOut(true);

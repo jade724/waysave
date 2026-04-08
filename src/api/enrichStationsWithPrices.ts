@@ -2,7 +2,7 @@
 // Enrich Google Places stations with community-submitted prices
 
 import { supabase } from "../lib/supabaseClient";
-import type { Station } from "../App";
+import type { Station } from "../types/station";
 
 export async function enrichWithCommunityPrices(stations: Station[]): Promise<Station[]> {
   // Get all recent price updates

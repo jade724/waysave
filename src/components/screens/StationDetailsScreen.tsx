@@ -21,7 +21,7 @@ import { submitStationUpdate } from "../../api/stationUpdates";
 import { supabase } from "../../lib/supabaseClient";
 import { addFavorite, removeFavorite, isFavorite as checkIsFavorite } from "../../api/favorites";
 
-import type { Station } from "../../App";
+import type { Station } from "../../types/station";
 
 /* ---------------- Helpers ---------------- */
 
@@ -90,9 +90,11 @@ export default function StationDetailsScreen({
         return;
       }
 
+      const ocmRaw = station.raw as
+        | { DateLastVerified?: string; DateLastStatusUpdate?: string }
+        | undefined;
       const apiDate =
-        station.raw?.DateLastVerified ||
-        station.raw?.DateLastStatusUpdate;
+        ocmRaw?.DateLastVerified || ocmRaw?.DateLastStatusUpdate;
 
       if (!cancelled && apiDate) {
         setLastUpdated(apiDate);
@@ -168,7 +170,7 @@ export default function StationDetailsScreen({
           text: `Check out this ${station.type === 'ev' ? 'EV charging' : 'fuel'} station on WaySave`,
           url: window.location.href,
         });
-      } catch (err) {
+      } catch {
         console.log("Share cancelled");
       }
     } else {

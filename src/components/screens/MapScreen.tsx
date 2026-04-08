@@ -12,12 +12,12 @@ import GoogleMapBackground, { type MapHandle, type RouteInfo } from "../map/Goog
 import DirectionsPanel from "../map/DirectionsPanel";
 import StationCard from "../shared/StationCard";
 
-import { fetchEVStations } from "../../api/openChargeMap";
+import { fetchEVStations, type OCMStation } from "../../api/openChargeMap";
 import { loadFuelStations } from "../../api/fuelStations";
 import { enrichWithCommunityPrices } from "../../api/enrichStationsWithPrices";
 import { calculateDistanceKm } from "../../lib/distance";
 
-import type { Station } from "../../App";
+import type { Station } from "../../types/station";
 import type { UserPreferences } from "../../lib/preferences";
 import { useAuth } from "../../lib/authContext";
 
@@ -124,7 +124,9 @@ function getGreeting() {
   return "Good evening";
 }
 
-//
+/** Dublin city centre — used when geolocation is denied or unavailable. */
+const FALLBACK_LOCATION = { lat: 53.3498, lng: -6.2603 };
+
 export default function MapScreen({
   prefs,
   onPrefsChange,
@@ -163,7 +165,6 @@ export default function MapScreen({
   const name = (user?.user_metadata?.full_name as string | undefined) ?? user?.email ?? "there";
 
   // Geolocation
-  const FALLBACK_LOCATION = { lat: 53.3498, lng: -6.2603 };
   const [userLocation, setUserLocation] = useState(FALLBACK_LOCATION);
   const [locationLoading, setLocationLoading] = useState(true);
   const [locationError, setLocationError] = useState(false);
@@ -209,13 +210,13 @@ export default function MapScreen({
         );
         if (cancelled) return;
 
-        const formatted: Station[] = data.map((ev: any) => ({
-          id: String(ev.ID),
-          externalId: String(ev.ID),
+        const formatted: Station[] = data.map((ev: OCMStation) => ({
+          id: String(ev.AddressInfo.ID),
+          externalId: String(ev.AddressInfo.ID),
           name: ev.AddressInfo.Title,
           lat: ev.AddressInfo.Latitude,
           lng: ev.AddressInfo.Longitude,
-          type: "ev",
+          type: "ev" as const,
           distance_km: calculateDistanceKm(
             userLocation.lat,
             userLocation.lng,

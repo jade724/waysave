@@ -4,7 +4,7 @@
 import { fetchFuelStationsFromGoogle, formatGooglePlaceToStation } from "./googlePlaces";
 import { calculateDistanceKm } from "../lib/distance";
 import type { FuelTypeFilter } from "../lib/preferences";
-import type { Station } from "../App";
+import type { Station } from "../types/station";
 
 /**
  * Load fuel stations using Google Places API with user preferences
@@ -49,14 +49,14 @@ export async function loadFuelStations(
     if (googlePlaces.length > 0) {
       const stations = googlePlaces.map(formatGooglePlaceToStation);
       
-      stations.forEach((station: any) => {
+      for (const station of stations) {
         station.distance_km = calculateDistanceKm(
           userLat,
           userLng,
           station.lat,
           station.lng
         );
-      });
+      }
  
       console.log(`✅ Loaded ${stations.length} fuel stations from Google Places`);
       return stations;

@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import type { Station } from "./types/station";
+
 import MobileFrame from "./components/layout/MobileFrame";
 import SplashScreen from "./components/screens/SplashScreen";
 import LoginScreen from "./components/screens/LoginScreen";
@@ -19,37 +21,7 @@ import BottomNav from "./components/layout/BottomNav";
 import { useAuth } from "./lib/authContext";
 import { loadPrefs, savePrefs, type UserPreferences } from "./lib/preferences";
 
-/**
- * 🚗 STATION INTERFACE - Enhanced with Route Information
- * ========================================================
- * This interface represents a fuel or EV charging station with all its properties.
- * 
- * 🆕 NEW PROPERTIES ADDED:
- * - driving_time_minutes: Actual driving time from Google Maps Directions API
- * - driving_distance_km: Actual road distance (vs straight-line Haversine distance)
- * - route_polyline: Encoded route path for display
- */
-export interface Station {
-  id: string;                    // Unique identifier for the station
-  externalId?: string;           // ID from external API (OpenChargeMap, etc.)
-  name: string;                  // Display name of the station
-  lat: number;                   // Latitude coordinate
-  lng: number;                   // Longitude coordinate
-  type: "fuel" | "ev";          // Station type: fuel or electric vehicle
-  
-  // 🔹 HAVERSINE DISTANCE (Straight-line "as the crow flies")
-  distance_km?: number;          // Calculated using Haversine Formula
-  
-  // 🔹 🆕 NEW: ACTUAL DRIVING DATA (from Google Maps APIs)
-  driving_time_minutes?: number; // Real driving time from Directions API
-  driving_distance_km?: number;  // Actual road distance (longer than straight-line)
-  route_polyline?: string;       // Encoded polyline for route visualization
-  
-  score?: number;                // Overall ranking score (future use)
-  price_label?: string;          // Human-readable price (e.g., "€1.45/L")
-  price_value?: number | null;   // Numeric price value for calculations
-  raw?: any;                     // Raw API response data
-}
+export type { Station } from "./types/station";
 
 // All possible screens in the app (used for routing with state).
 export type Screen =
@@ -108,32 +80,22 @@ export default function App() {
     return () => clearTimeout(t);
   }, []);
 
-  // Route guard: keep users on valid screens based on auth.
-  useEffect(() => {
-    if (!splashFinished) return;
-    if (loading) return;
-
-    // guest trying to access authed pages
-    if (!isAuthed && SCREENS_REQUIRING_AUTH.has(screen)) {
-      setScreen("login");
-      return;
+  /** Auth-aware screen: avoids setState in an effect for route guarding (React 19 lint). */
+  const displayScreen = useMemo((): Screen => {
+    if (!splashFinished) return "splash";
+    if (loading) {
+      if (screen === "splash") return "splash";
+      return screen;
     }
-
-    // authed user trying to access guest screens
-    if (isAuthed && SCREENS_FOR_GUESTS_ONLY.has(screen)) {
-      setScreen("home");
-      return;
-    }
-
-    // initial landing
-    if (screen === "splash") {
-      setScreen(isAuthed ? "home" : "login");
-    }
+    if (!isAuthed && SCREENS_REQUIRING_AUTH.has(screen)) return "login";
+    if (isAuthed && SCREENS_FOR_GUESTS_ONLY.has(screen)) return "home";
+    if (screen === "splash") return isAuthed ? "home" : "login";
+    return screen;
   }, [screen, splashFinished, loading, isAuthed]);
 
   // Open the station details screen with a selected station.
   const openStationDetails = (station: Station) => {
-    setPreviousScreen(screen);
+    setPreviousScreen(displayScreen);
     setSelectedStation(station);
     setScreen("station-details");
   };
@@ -162,24 +124,24 @@ export default function App() {
           ${transitioning ? "opacity-0" : "opacity-100"}
         `}
       >
-        {/* Each screen is conditionally rendered based on `screen` */}
-        {screen === "splash" && <SplashScreen />}
+        {/* Each screen is conditionally rendered from auth-aware `displayScreen` */}
+        {displayScreen === "splash" && <SplashScreen />}
 
-        {screen === "login" && (
+        {displayScreen === "login" && (
           <LoginScreen
             onLogin={() => handleNavigate("home")}
             onSignup={() => handleNavigate("signup")}
           />
         )}
 
-        {screen === "signup" && (
+        {displayScreen === "signup" && (
           <SignupScreen
             onBack={() => handleNavigate("login")}
             onSignupSuccess={() => handleNavigate("home")}
           />
         )}
 
-        {screen === "home" && (
+        {displayScreen === "home" && (
           <HomeScreen
             onOpenMap={() => handleNavigate("map")}
             onOpenFilters={() => handleNavigate("filters")}
@@ -187,7 +149,7 @@ export default function App() {
           />
         )}
 
-        {screen === "map" && (
+        {displayScreen === "map" && (
           <MapScreen
             prefs={prefs}
             onPrefsChange={applyPrefs}
@@ -198,7 +160,7 @@ export default function App() {
           />
         )}
 
-        {screen === "filters" && (
+        {displayScreen === "filters" && (
           <FilterScreen
             initial={prefs}
             onApply={applyPrefs}
@@ -206,21 +168,21 @@ export default function App() {
           />
         )}
 
-        {screen === "profile" && (
+        {displayScreen === "profile" && (
           <ProfileScreen onLoggedOut={handleLoggedOut} 
           onOpenFavorites={() => handleNavigate("favourites")}
           onOpenSettings={() => handleNavigate("settings")}
           />
         )}
 
-        {screen === "favourites" && (
+        {displayScreen === "favourites" && (
           <FavoritesScreen
           onBack={() => handleNavigate("home")}
           onStationClick={openStationDetails}
           />
         )}
 
-        {screen === "settings" && (
+        {displayScreen === "settings" && (
          <SettingsScreen
             onBack={() => handleNavigate("profile")}
             prefs={prefs}
@@ -228,7 +190,7 @@ export default function App() {
           />
         )}
 
-        {screen === "station-details" && selectedStation && (
+        {displayScreen === "station-details" && selectedStation && (
           <StationDetailsScreen
             station={selectedStation}
             onBack={() => handleNavigate(previousScreen)}
@@ -236,17 +198,17 @@ export default function App() {
           />
         )}
 
-        {screen === "station-update-submitted" && (
+        {displayScreen === "station-update-submitted" && (
           <StationUpdateSubmittedScreen onBack={() => handleNavigate("map")} />
         )}
 
-        {isAuthed && !["splash", "login", "signup"].includes(screen) && (
-          <BottomNav current={screen} onNavigate={handleNavigate} />
+        {isAuthed && !["splash", "login", "signup"].includes(displayScreen) && (
+          <BottomNav current={displayScreen} onNavigate={handleNavigate} />
         )}
       </div>
 
       {/* Optional: Global Loading Overlay */}
-      {loading && screen !== "splash" && (
+      {loading && displayScreen !== "splash" && (
         <div className="fixed inset-0 bg-[#0D0F14]/80 backdrop-blur-sm z-50 flex items-center justify-center">
           <div className="text-white text-center">
             <div className="w-12 h-12 border-4 border-[#00E0C6] border-t-transparent rounded-full animate-spin mx-auto mb-3" />

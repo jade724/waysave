@@ -1,4 +1,4 @@
-// src/types/station.ts
+// Canonical station model (fuel + EV) used across the app.
 
 export interface Station {
   id: string;
@@ -11,8 +11,19 @@ export interface Station {
   distance_km?: number;
   score?: number;
 
-  price_label?: string;
-  price_value?: number | null;
+  driving_time_minutes?: number;
+  driving_distance_km?: number;
+  route_polyline?: string;
 
-  raw?: any;
+  price_label?: string | null;
+  price_value?: number | null;
+  priceSource?: "community";
+
+  /** Optional Google Places / OCM payload for debugging or future use */
+  raw?: unknown;
+
+  address?: string;
+  rating?: number;
+  isOpen?: boolean;
+  status?: string;
 }

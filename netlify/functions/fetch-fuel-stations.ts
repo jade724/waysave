@@ -4,8 +4,20 @@ import type { Handler, HandlerEvent } from "@netlify/functions";
 // Use GOOGLE_MAPS_API_KEY on the server (VITE_ prefix is for client-side only)
 const GOOGLE_MAPS_KEY = process.env.GOOGLE_MAPS_API_KEY ?? process.env.VITE_GOOGLE_MAPS_API_KEY
 
+/** Minimal shape returned by Nearby Search (server forwards JSON as-is). */
+interface GooglePlaceResult {
+  place_id: string;
+  name: string;
+  geometry: { location: { lat: number; lng: number } };
+  vicinity?: string;
+  business_status?: string;
+  rating?: number;
+  types?: string[];
+  opening_hours?: { open_now?: boolean };
+}
+
 interface GooglePlacesResponse {
-  results: any[];
+  results: GooglePlaceResult[];
   status: string;
   error_message?: string;
   next_page_token?: string;
