@@ -1,0 +1,7 @@
+Lab 7: Network Analysis
+Lab Objective: In this lab, you will perform a network analysis on the topic of service accessibility. This lab also compares the network analysis to your previous lab’s investigation.
+This lab requires is assessed and requires a quiz and a demo.
+AI is encouraged during fulfilling the lab and for the quiz and demo parts.
+Lab Duration: 2 hours.
+Lab Instructions:
+Start your google colab.  Download the .ipynb file and execute all tasks. Understad what you are doing and do the task associated with this lab. Then demo to your lab TA.
