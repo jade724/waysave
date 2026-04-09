@@ -8,6 +8,9 @@ export interface Station {
   lng: number;
   type: "fuel" | "ev";
 
+  /** Fuel forecourts only — which fuels are sold (Google Places defaults to both). */
+  fuelTypes?: "petrol" | "diesel" | "both";
+
   distance_km?: number;
   score?: number;
 

@@ -4,9 +4,10 @@
 import { ArrowLeft, Heart, Trash2, Navigation, MapPin, RefreshCw } from "lucide-react";
 import { useState, useEffect } from "react";
 import { useAuth } from "../../lib/authContext";
+import { useToast } from "../../lib/toastContext";
 import { fetchUserFavorites, removeFavorite } from "../../api/favorites";
 import { calculateDistanceKm } from "../../lib/distance";
-import type { Station } from "../../App";
+import type { Station } from "../../types/station";
 
 interface Props {
   onBack: () => void;
@@ -15,6 +16,7 @@ interface Props {
 
 export default function FavoritesScreen({ onBack, onStationClick }: Props) {
   const { user } = useAuth();
+  const { showToast } = useToast();
   const [favorites, setFavorites] = useState<Station[]>([]);
   const [loading, setLoading] = useState(true);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
@@ -76,7 +78,7 @@ export default function FavoritesScreen({ onBack, onStationClick }: Props) {
       setFavorites(favorites.filter((s) => s.id !== stationId));
     } catch (error) {
       console.error("Failed to remove favorite:", error);
-      alert("Failed to remove favorite. Please try again.");
+      showToast("Failed to remove favorite. Please try again.", "error");
     }
   };
 
@@ -85,8 +87,10 @@ export default function FavoritesScreen({ onBack, onStationClick }: Props) {
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
         <button
+          type="button"
           onClick={onBack}
           className="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center hover:bg-white/10 transition"
+          aria-label="Go back"
         >
           <ArrowLeft className="w-5 h-5 text-white/80" />
         </button>

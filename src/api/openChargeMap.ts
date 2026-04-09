@@ -1,7 +1,12 @@
 // src/api/openChargeMap.ts
-// Clean API wrapper with connector filter support for Open Charge Map.
+// Open Charge Map — prefers Netlify proxy (key on server); falls back to VITE_OCM_API_KEY for local Vite-only dev.
 
 import type { ConnectorFilters } from "../lib/preferences";
+import { devWarn } from "../lib/logger";
+
+const FUNCTIONS_BASE = import.meta.env.DEV
+  ? "http://localhost:8888/.netlify/functions"
+  : "/.netlify/functions";
 
 export interface OCMStation {
   AddressInfo: {
@@ -12,11 +17,9 @@ export interface OCMStation {
     Distance: number;
   };
   Connections: Array<{
-    ConnectionType?:{ FormalName?: string; Title?: string}
+    ConnectionType?: { FormalName?: string; Title?: string };
   }>;
 }
-
-const OCM_API_KEY = import.meta.env.VITE_OCM_API_KEY;
 
 // Map our connector keys to the strings OCM uses in ConnectionType titles
 const CONNECTOR_KEYWORDS: Record<keyof ConnectorFilters, string[]> = {
@@ -24,13 +27,13 @@ const CONNECTOR_KEYWORDS: Record<keyof ConnectorFilters, string[]> = {
   CHAdeMO: ["chademo"],
   Type2: ["type 2", "type2", "iec 62196"],
 };
+
 function stationMatchesConnectors(
   station: OCMStation,
   connectors: ConnectorFilters
 ): boolean {
-  // If no connector filter is active at all, show everything
   const anyActive = Object.values(connectors).some(Boolean);
-  if (!anyActive) return true;
+  if (!anyActive) return false;
   return station.Connections.some((conn) => {
     const label = (
       conn.ConnectionType?.FormalName ??
@@ -38,11 +41,64 @@ function stationMatchesConnectors(
       ""
     ).toLowerCase();
     return (Object.keys(connectors) as Array<keyof ConnectorFilters>).some(
-      (key) => connectors[key] && CONNECTOR_KEYWORDS[key].some((kw) => label.includes(kw))
+      (key) =>
+        connectors[key] && CONNECTOR_KEYWORDS[key].some((kw) => label.includes(kw))
     );
   });
 }
 
+/** Returns `null` if the proxy failed; an empty array means OCM returned no POIs. */
+async function fetchOCMViaProxy(
+  lat: number,
+  lng: number,
+  distanceKM: number,
+  maxresults: number
+): Promise<OCMStation[] | null> {
+  try {
+    const url = new URL(`${FUNCTIONS_BASE}/fetch-openchargemap`, window.location.origin);
+    url.searchParams.set("lat", String(lat));
+    url.searchParams.set("lng", String(lng));
+    url.searchParams.set("distance", String(distanceKM));
+    url.searchParams.set("maxresults", String(maxresults));
+
+    const res = await fetch(url.toString());
+    if (!res.ok) return null;
+
+    const data: unknown = await res.json();
+    if (!Array.isArray(data)) return null;
+    return data as OCMStation[];
+  } catch {
+    return null;
+  }
+}
+
+async function fetchOCMDirect(
+  lat: number,
+  lng: number,
+  distanceKM: number,
+  maxresults: number
+): Promise<OCMStation[]> {
+  const key = import.meta.env.VITE_OCM_API_KEY as string | undefined;
+  if (!key) {
+    devWarn(
+      "Open Charge Map: set OCM_API_KEY in Netlify (proxy) or VITE_OCM_API_KEY for local Vite-only dev."
+    );
+    return [];
+  }
+
+  const url = `https://api.openchargemap.io/v3/poi/?output=json&latitude=${lat}&longitude=${lng}&distance=${distanceKM}&distanceunit=KM&maxresults=${maxresults}&key=${key}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    devWarn("OCM API error:", res.statusText);
+    return [];
+  }
+  const data: unknown = await res.json();
+  if (!Array.isArray(data)) {
+    devWarn("OCM returned invalid data");
+    return [];
+  }
+  return data as OCMStation[];
+}
 
 export async function fetchEVStations(
   lat: number,
@@ -50,31 +106,21 @@ export async function fetchEVStations(
   distanceKM = 5,
   connectors: ConnectorFilters
 ): Promise<OCMStation[]> {
+  const maxresults = 50;
+
   try {
-    const url = `https://api.openchargemap.io/v3/poi/?output=json&latitude=${lat}&longitude=${lng}&distance=${distanceKM}&distanceunit=KM&maxresults=50&key=${OCM_API_KEY}`;
+    const fromProxy = await fetchOCMViaProxy(lat, lng, distanceKM, maxresults);
+    const stations =
+      fromProxy !== null
+        ? fromProxy
+        : await fetchOCMDirect(lat, lng, distanceKM, maxresults);
 
-    const res = await fetch(url);
-
-    if (!res.ok) {
-      console.error("OCM API error:", res.statusText);
-      return [];
-    }
-
-    const data = await res.json();
-
-    if (!Array.isArray(data)) {
-      console.error("OCM returned invalid data:", data);
-      return [];
-    }
-
-    const stations = data as OCMStation[];
-    // Apply connector filter if provided
     if (connectors) {
       return stations.filter((s) => stationMatchesConnectors(s, connectors));
     }
     return stations;
   } catch (err) {
-    console.error("OCM fetch error:", err);
+    devWarn("OCM fetch error:", err);
     return [];
   }
 }

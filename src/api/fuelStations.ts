@@ -2,7 +2,9 @@
 // Load fuel stations with Google Places API respecting user preferences
 
 import { fetchFuelStationsFromGoogle, formatGooglePlaceToStation } from "./googlePlaces";
+import { devError, devLog } from "../lib/logger";
 import { calculateDistanceKm } from "../lib/distance";
+import { effectiveSearchRadiusKm, matchesFuelTypeFilter } from "../lib/stationFilters";
 import type { FuelTypeFilter } from "../lib/preferences";
 import type { Station } from "../types/station";
 
@@ -11,7 +13,7 @@ import type { Station } from "../types/station";
  * 
  * Strategy:
  * 1. Use user's maxDistanceKm preference for radius
- * 2. Fetch ALL available stations within that radius (up to 60)
+ * 2. Fetch stations within that radius (Google Nearby Search caps at 60 per query)
  * 3. Calculate distances using Haversine formula
  * 4. Let ranking algorithm filter/sort based on preferences
  * 5. Fallback to hardcoded data if API fails
@@ -28,7 +30,7 @@ export async function loadFuelStations(
   fuelType?: FuelTypeFilter
 ): Promise<Station[]> {
   
-  const searchRadiusKm = maxDistanceKm || 20;
+  const searchRadiusKm = effectiveSearchRadiusKm(maxDistanceKm);
   const searchRadiusMeters = searchRadiusKm * 1000;
  
   // Google Places Nearby Search max radius is 50,000 m
@@ -36,19 +38,19 @@ export async function loadFuelStations(
  
   // Step 1: Try Google Places API first (with type assertion for better typing)
   try {
-    console.log(`🔍 Loading fuel stations within ${searchRadiusKm}km...`);
+    devLog(`🔍 Loading fuel stations within ${searchRadiusKm}km...`);
     
     // ✅ FIX: Add type assertion to ensure we get the expected structure
     const googlePlaces = await fetchFuelStationsFromGoogle(
       userLat, 
       userLng, 
       cappedRadiusMeters, 
-      100
+      60
     );
     
     if (googlePlaces.length > 0) {
-      const stations = googlePlaces.map(formatGooglePlaceToStation);
-      
+      let stations = googlePlaces.map(formatGooglePlaceToStation);
+
       for (const station of stations) {
         station.distance_km = calculateDistanceKm(
           userLat,
@@ -57,18 +59,29 @@ export async function loadFuelStations(
           station.lng
         );
       }
- 
-      console.log(`✅ Loaded ${stations.length} fuel stations from Google Places`);
+
+      if (fuelType) {
+        stations = stations.filter((s) => matchesFuelTypeFilter(s, fuelType));
+      }
+
+      // Match list + EV behaviour: only keep stations within the user’s max distance (straight-line km).
+      if (maxDistanceKm != null && maxDistanceKm > 0) {
+        stations = stations.filter(
+          (s) => s.distance_km != null && s.distance_km <= maxDistanceKm
+        );
+      }
+
+      devLog(`✅ Loaded ${stations.length} fuel stations from Google Places`);
       return stations;
     }
  
   } catch (error) {
-    console.error("⚠️ Google Places failed, using fallback data:", error);
+    devError("⚠️ Google Places failed, using fallback data:", error);
   }
  
   // Step 2: Fallback to hardcoded stations if API fails or returns no results
-  console.log("⚠️ Using hardcoded Irish fuel stations");
-  return getHardcodedIrishStations(userLat, userLng, fuelType);
+  devLog("⚠️ Using hardcoded Irish fuel stations");
+  return getHardcodedIrishStations(userLat, userLng, fuelType, maxDistanceKm);
 }
  
 /**
@@ -114,7 +127,8 @@ type HardcodedStation = {
 function getHardcodedIrishStations(
   userLat: number,
   userLng: number,
-  fuelType?: FuelTypeFilter
+  fuelType?: FuelTypeFilter,
+  maxDistanceKm?: number
 ): Station[] {
   const filtered = fuelType
     ? HARDCODED_STATIONS.filter((s) =>
@@ -122,11 +136,17 @@ function getHardcodedIrishStations(
       )
     : HARDCODED_STATIONS;
 
-  return filtered.map((station) => ({
-  
+  let stations: Station[] = filtered.map((station) => ({
     ...station,
     price_label: `€${station.price_value.toFixed(2)}/L`,
     distance_km: calculateDistanceKm(userLat, userLng, station.lat, station.lng),
   }));
- 
+
+  if (maxDistanceKm != null && maxDistanceKm > 0) {
+    stations = stations.filter(
+      (s) => s.distance_km != null && s.distance_km <= maxDistanceKm
+    );
+  }
+
+  return stations;
 }

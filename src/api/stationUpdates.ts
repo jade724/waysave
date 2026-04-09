@@ -1,6 +1,6 @@
 // src/api/stationUpdates.ts
 import { supabase } from "../lib/supabaseClient";
-import type { Station } from "../App";
+import type { Station } from "../types/station";
 
 export async function submitStationUpdate(args: {
   userId: string;

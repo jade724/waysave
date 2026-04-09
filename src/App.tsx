@@ -1,29 +1,32 @@
 // src/App.tsx
 
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 
 import type { Station } from "./types/station";
 
 import MobileFrame from "./components/layout/MobileFrame";
+import PwaUpdateNotifier from "./components/PwaUpdateNotifier";
 import SplashScreen from "./components/screens/SplashScreen";
 import LoginScreen from "./components/screens/LoginScreen";
 import SignupScreen from "./components/screens/SignupScreen";
 import HomeScreen from "./components/screens/HomeScreen";
-import MapScreen from "./components/screens/MapScreen";
-import FilterScreen from "./components/screens/FilterScreen";
-import ProfileScreen from "./components/screens/ProfileScreen";
-import StationDetailsScreen from "./components/screens/StationDetailsScreen";
-import StationUpdateSubmittedScreen from "./components/screens/StationUpdateSubmittedScreen";
-import FavoritesScreen from "./components/screens/FavouritesScreen";
-import SettingsScreen from "./components/screens/SettingsScreen";
 import BottomNav from "./components/layout/BottomNav";
+
+const MapScreen = lazy(() => import("./components/screens/MapScreen"));
+const FilterScreen = lazy(() => import("./components/screens/FilterScreen"));
+const ProfileScreen = lazy(() => import("./components/screens/ProfileScreen"));
+const StationDetailsScreen = lazy(() => import("./components/screens/StationDetailsScreen"));
+const StationUpdateSubmittedScreen = lazy(
+  () => import("./components/screens/StationUpdateSubmittedScreen")
+);
+const FavoritesScreen = lazy(() => import("./components/screens/FavouritesScreen"));
+const SettingsScreen = lazy(() => import("./components/screens/SettingsScreen"));
 
 import { useAuth } from "./lib/authContext";
 import { loadPrefs, savePrefs, type UserPreferences } from "./lib/preferences";
 
 export type { Station } from "./types/station";
 
-// All possible screens in the app (used for routing with state).
 export type Screen =
   | "splash"
   | "login"
@@ -37,7 +40,6 @@ export type Screen =
   | "station-details"
   | "station-update-submitted";
 
-// Screens that only authenticated users can see.
 const SCREENS_REQUIRING_AUTH = new Set<Screen>([
   "home",
   "map",
@@ -49,38 +51,43 @@ const SCREENS_REQUIRING_AUTH = new Set<Screen>([
   "station-update-submitted",
 ]);
 
-// Screens that only guests (not logged in) should see.
 const SCREENS_FOR_GUESTS_ONLY = new Set<Screen>(["splash", "login", "signup"]);
+
+function RouteLoading() {
+  return (
+    <div className="w-full h-full min-h-[40vh] flex flex-col items-center justify-center bg-[#0D0F14] gap-3">
+      <div
+        className="w-10 h-10 border-2 border-[#00E0C6] border-t-transparent rounded-full animate-spin"
+        aria-hidden
+      />
+      <p className="text-sm text-white/50">Loading…</p>
+    </div>
+  );
+}
 
 export default function App() {
   const { session, loading } = useAuth();
 
-  // User preferences are loaded once on startup.
   const [prefs, setPrefs] = useState<UserPreferences>(() => loadPrefs());
 
-  // Save preferences both in state and localStorage.
   const applyPrefs = async (next: UserPreferences) => {
     setPrefs(next);
     savePrefs(next);
   };
 
-  // UI navigation is driven by a single screen state.
   const [screen, setScreen] = useState<Screen>("splash");
   const [selectedStation, setSelectedStation] = useState<Station | null>(null);
   const [previousScreen, setPreviousScreen] = useState<Screen>("map");
   const [splashFinished, setSplashFinished] = useState(false);
   const [transitioning, setTransitioning] = useState(false);
 
-  // Use memo so this value only changes when `session` changes.
   const isAuthed = useMemo(() => !!session, [session]);
 
-  // Show splash screen for a short, fixed time.
   useEffect(() => {
     const t = setTimeout(() => setSplashFinished(true), 1200);
     return () => clearTimeout(t);
   }, []);
 
-  /** Auth-aware screen: avoids setState in an effect for route guarding (React 19 lint). */
   const displayScreen = useMemo((): Screen => {
     if (!splashFinished) return "splash";
     if (loading) {
@@ -93,20 +100,17 @@ export default function App() {
     return screen;
   }, [screen, splashFinished, loading, isAuthed]);
 
-  // Open the station details screen with a selected station.
   const openStationDetails = (station: Station) => {
     setPreviousScreen(displayScreen);
     setSelectedStation(station);
     setScreen("station-details");
   };
 
-  // Reset sensitive state when logging out.
   const handleLoggedOut = () => {
     setSelectedStation(null);
     setScreen("login");
   };
 
-  // Enhanced navigation with transition support
   const handleNavigate = (newScreen: Screen) => {
     setTransitioning(true);
     setTimeout(() => {
@@ -117,14 +121,13 @@ export default function App() {
 
   return (
     <MobileFrame>
-      {/* Screen Transition Wrapper */}
+      <PwaUpdateNotifier />
       <div
         className={`
           w-full h-full transition-opacity duration-150
           ${transitioning ? "opacity-0" : "opacity-100"}
         `}
       >
-        {/* Each screen is conditionally rendered from auth-aware `displayScreen` */}
         {displayScreen === "splash" && <SplashScreen />}
 
         {displayScreen === "login" && (
@@ -143,71 +146,78 @@ export default function App() {
 
         {displayScreen === "home" && (
           <HomeScreen
+            prefs={prefs}
             onOpenMap={() => handleNavigate("map")}
             onOpenFilters={() => handleNavigate("filters")}
             onOpenFavorites={() => handleNavigate("favourites")}
           />
         )}
 
-        {displayScreen === "map" && (
-          <MapScreen
-            prefs={prefs}
-            onPrefsChange={applyPrefs}
-            onFiltersClick={() => handleNavigate("filters")}
-            onStationClick={openStationDetails}
-            onPinSelect={openStationDetails}
-            onLoggedOut={handleLoggedOut}
-          />
-        )}
+        <Suspense fallback={<RouteLoading />}>
+          {displayScreen === "map" && (
+            <MapScreen
+              prefs={prefs}
+              onPrefsChange={applyPrefs}
+              onFiltersClick={() => handleNavigate("filters")}
+              onStationClick={openStationDetails}
+              onPinSelect={openStationDetails}
+              onLoggedOut={handleLoggedOut}
+            />
+          )}
 
-        {displayScreen === "filters" && (
-          <FilterScreen
-            initial={prefs}
-            onApply={applyPrefs}
-            onClose={() => handleNavigate("map")}
-          />
-        )}
+          {displayScreen === "filters" && (
+            <FilterScreen
+              initial={prefs}
+              onApply={applyPrefs}
+              onClose={() => handleNavigate("map")}
+            />
+          )}
 
-        {displayScreen === "profile" && (
-          <ProfileScreen onLoggedOut={handleLoggedOut} 
-          onOpenFavorites={() => handleNavigate("favourites")}
-          onOpenSettings={() => handleNavigate("settings")}
-          />
-        )}
+          {displayScreen === "profile" && (
+            <ProfileScreen
+              prefs={prefs}
+              onLoggedOut={handleLoggedOut}
+              onOpenFavorites={() => handleNavigate("favourites")}
+              onOpenSettings={() => handleNavigate("settings")}
+              onOpenFilters={() => handleNavigate("filters")}
+              onOpenMap={() => handleNavigate("map")}
+              onOpenHome={() => handleNavigate("home")}
+            />
+          )}
 
-        {displayScreen === "favourites" && (
-          <FavoritesScreen
-          onBack={() => handleNavigate("home")}
-          onStationClick={openStationDetails}
-          />
-        )}
+          {displayScreen === "favourites" && (
+            <FavoritesScreen
+              onBack={() => handleNavigate("home")}
+              onStationClick={openStationDetails}
+            />
+          )}
 
-        {displayScreen === "settings" && (
-         <SettingsScreen
-            onBack={() => handleNavigate("profile")}
-            prefs={prefs}
-            onPrefsChange={applyPrefs}
-          />
-        )}
+          {displayScreen === "settings" && (
+            <SettingsScreen
+              onBack={() => handleNavigate("profile")}
+              prefs={prefs}
+              onPrefsChange={applyPrefs}
+            />
+          )}
 
-        {displayScreen === "station-details" && selectedStation && (
-          <StationDetailsScreen
-            station={selectedStation}
-            onBack={() => handleNavigate(previousScreen)}
-            onSubmitUpdate={() => handleNavigate("station-update-submitted")}
-          />
-        )}
+          {displayScreen === "station-details" && selectedStation && (
+            <StationDetailsScreen
+              station={selectedStation}
+              onBack={() => handleNavigate(previousScreen)}
+              onSubmitUpdate={() => handleNavigate("station-update-submitted")}
+            />
+          )}
 
-        {displayScreen === "station-update-submitted" && (
-          <StationUpdateSubmittedScreen onBack={() => handleNavigate("map")} />
-        )}
-
-        {isAuthed && !["splash", "login", "signup"].includes(displayScreen) && (
-          <BottomNav current={displayScreen} onNavigate={handleNavigate} />
-        )}
+          {displayScreen === "station-update-submitted" && (
+            <StationUpdateSubmittedScreen onBack={() => handleNavigate("map")} />
+          )}
+        </Suspense>
       </div>
 
-      {/* Optional: Global Loading Overlay */}
+      {isAuthed && !["splash", "login", "signup"].includes(displayScreen) && (
+        <BottomNav current={displayScreen} onNavigate={handleNavigate} />
+      )}
+
       {loading && displayScreen !== "splash" && (
         <div className="fixed inset-0 bg-[#0D0F14]/80 backdrop-blur-sm z-50 flex items-center justify-center">
           <div className="text-white text-center">

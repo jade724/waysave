@@ -22,17 +22,17 @@ export default function BottomNav({ current, onNavigate }: Props) {
     { id: "profile", label: "Profile", icon: <User className="w-5 h-5" /> },
   ] as const;
 
-  // Some screens (details, submitted) still highlight the Map tab.
+  // Settings is opened from Profile — highlight Profile, not Home.
   const activeId =
     current === "filters"
       ? "filters"
-      : current === "profile"
-      ? "profile"
-      : current === "map" ||
-        current === "station-details" ||
-        current === "station-update-submitted"
-      ? "map"
-      : "home";
+      : current === "profile" || current === "settings"
+        ? "profile"
+        : current === "map" ||
+            current === "station-details" ||
+            current === "station-update-submitted"
+          ? "map"
+          : "home";
 
   // Wrapper to keep the JSX clean.
   const handleClick = (id: (typeof navItems)[number]["id"]) => {
@@ -42,14 +42,15 @@ export default function BottomNav({ current, onNavigate }: Props) {
   return (
     <nav
       className="
-        fixed bottom-6 left-1/2 -translate-x-1/2
-        w-[360px] h-[78px]
+        fixed bottom-6 left-1/2 -translate-x-1/2 z-[100]
+        w-[360px] max-w-[calc(100vw-2rem)] h-[78px]
         bg-[#12151c]/95 backdrop-blur-xl
         border border-white/5
         rounded-3xl
         shadow-[0_0_40px_-15px_rgba(0,224,198,0.25)]
         flex items-center justify-around
         px-3
+        pointer-events-auto
       "
       aria-label="Primary"
     >
@@ -57,6 +58,7 @@ export default function BottomNav({ current, onNavigate }: Props) {
         const active = item.id === activeId;
         return (
           <button
+            type="button"
             key={item.id}
             onClick={() => handleClick(item.id)}
             className={`

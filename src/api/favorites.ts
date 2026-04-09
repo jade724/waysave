@@ -2,7 +2,8 @@
 // API functions for managing user's favorite stations
 
 import { supabase } from "../lib/supabaseClient";
-import type { Station } from "../App";
+import { devError, devLog } from "../lib/logger";
+import type { Station } from "../types/station";
 
 /**
  * Fetch all favorite stations for the current user
@@ -15,7 +16,7 @@ export async function fetchUserFavorites(userId: string): Promise<Station[]> {
     .order("created_at", { ascending: false });
 
   if (error) {
-    console.error("Error fetching favorites:", error);
+    devError("Error fetching favorites:", error);
     throw error;
   }
 
@@ -47,10 +48,10 @@ export async function addFavorite(userId: string, station: Station): Promise<voi
   if (error) {
     // Ignore duplicate errors (already favorited)
     if (error.code === "23505") {
-      console.log("Station already favorited");
+      devLog("Station already favorited");
       return;
     }
-    console.error("Error adding favorite:", error);
+    devError("Error adding favorite:", error);
     throw error;
   }
 }
@@ -66,7 +67,7 @@ export async function removeFavorite(userId: string, stationId: string): Promise
     .eq("station_id", stationId);
 
   if (error) {
-    console.error("Error removing favorite:", error);
+    devError("Error removing favorite:", error);
     throw error;
   }
 }
@@ -83,7 +84,7 @@ export async function isFavorite(userId: string, stationId: string): Promise<boo
     .maybeSingle();
 
   if (error) {
-    console.error("Error checking favorite:", error);
+    devError("Error checking favorite:", error);
     return false;
   }
 
@@ -100,7 +101,7 @@ export async function getFavoritesCount(userId: string): Promise<number> {
     .eq("user_id", userId);
 
   if (error) {
-    console.error("Error getting favorites count:", error);
+    devError("Error getting favorites count:", error);
     return 0;
   }
 

@@ -1,11 +1,20 @@
-// src/components/screens/MapScreen.tsx
-
-// src/components/screens/MapScreen.tsx
-
-import { useEffect, useMemo, useState, useRef } from "react";
-import { 
-  Fuel, Zap, Filter, LogOut, List, RefreshCw, Navigation, Search, X, ChevronUp, 
-  ChevronDown, Route as RouteIcon, MapPin, Clock, Layers 
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import {
+  Fuel,
+  Zap,
+  Filter,
+  LogOut,
+  List,
+  RefreshCw,
+  Navigation,
+  Search,
+  X,
+  ChevronUp,
+  ChevronDown,
+  MapPin,
+  Clock,
+  Layers,
+  Timer,
 } from "lucide-react";
 
 import GoogleMapBackground, { type MapHandle, type RouteInfo } from "../map/GoogleMapBackground";
@@ -16,6 +25,12 @@ import { fetchEVStations, type OCMStation } from "../../api/openChargeMap";
 import { loadFuelStations } from "../../api/fuelStations";
 import { enrichWithCommunityPrices } from "../../api/enrichStationsWithPrices";
 import { calculateDistanceKm } from "../../lib/distance";
+import {
+  effectiveEVSearchRadiusKm,
+  matchesFuelTypeFilter,
+  selectRouteIndexForSearchPreference,
+} from "../../lib/stationFilters";
+import { devLog } from "../../lib/logger";
 
 import type { Station } from "../../types/station";
 import type { UserPreferences } from "../../lib/preferences";
@@ -30,88 +45,46 @@ interface Props {
   onLoggedOut: () => void;
 }
 
-/* ============================================================================
- * 🧮 RANKING ALGORITHMS
- * ============================================================================
- * Three sorting algorithms: nearest, cheapest (weighted scoring), fastest
- * Complexity: O(n) filter + O(n log n) sort = O(n log n)
- * Used for: Sorting stations based on user preferences and geofencing
- * The ranking function first filters stations based on geofencing (distance_km <= maxDistanceKm
- */
+/* Ranking: fuel-type (fuel tab) → geofence by max distance → sort per Filters / Settings. */
 
+function rankStations(
+  stations: Station[],
+  prefs: UserPreferences,
+  activeTab: "fuel" | "ev"
+): Station[] {
+  let list = stations;
 
-/**
- * TIMSORT (JavaScript's Built-in Sort)
- * =====================================
- * JavaScript's .sort() method uses TimSort algorithm
- * 
- * Algorithm Type: Hybrid sorting (Merge Sort + Insertion Sort)
- * Time Complexity: O(n log n)
- * Used for: Sorting stations by distance, price, or time
- * 
- * The ranking function first filters stations based on geofencing (distance_km <= maxDistanceKm)
- * Then it sorts the filtered stations based on user preference:
- * - Nearest: Sort by distance_km ascending
- * - Cheapest: Calculate a weighted score (price_value * 0.7 + distance_km * 0.3) and sort by score ascending
- * - Fastest: Sort by driving_time_minutes if available, otherwise fallback to distance_km
- * This allows for a flexible ranking system that can adapt to different user preferences while maintaining efficient performance.
- */
+  if (activeTab === "fuel" && prefs.fuelType) {
+    list = list.filter((s) => matchesFuelTypeFilter(s, prefs.fuelType));
+  }
 
-function rankStations(stations: Station[], prefs: UserPreferences): Station[] {
+  const maxKm =
+    prefs.maxDistanceKm > 0 ? prefs.maxDistanceKm : Number.POSITIVE_INFINITY;
+  const filtered = list.filter(
+    (s) => s.distance_km != null && s.distance_km <= maxKm
+  );
 
-  console.log(`🔍 Ranking ${stations.length} stations with max distance ${prefs.maxDistanceKm}km`);
-
-  const filtered = stations.filter((s) => s.distance_km != null && s.distance_km <= prefs.maxDistanceKm);
-  console.log(`✅ After geofencing: ${filtered.length} stations within ${prefs.maxDistanceKm}km`);
-
-  // linear filter to apply geofencing based on distance_km and user-defined maxDistanceKm
-  // STEP 1: Geofencing filter (O(n)) (Haverine filter as pre-filter before sorting)
-    // STEP 1: Check if distance exists
-    // s.distance_km != null
-    // STEP 2: Check if distance is within radius
-    // s.distance_km <= prefs.maxDistanceKm
-  
-    
-    // STEP 2: Multi-criteria sort (O(n log n) - TimSort)
-    return filtered.sort((a, b) => {
-      
-      // greedy algorithm for NEAREST that simply sorts by distance_km in ascending order
-      // NEAREST: Simple distance sort
-    
+  return filtered.sort((a, b) => {
       if (prefs.preference === "nearest") {
         return (a.distance_km ?? 0) - (b.distance_km ?? 0);
       }
 
-      // simple additive weighting for CHEAPEST 
-      //multicriteria sort that combines price and distance into a single score to rank stations by "cheapest" while still considering distance
-      // CHEAPEST: Weighted scoring (70% price, 30% distance)
-      // Formula: score = (price × 0.7) + (distance × 0.3)
-      // WHY 70/30?
-      // - User cares MORE about saving money (70%)
-      // - But won't drive too far to save 1 cent (30%)
       if (prefs.preference === "cheapest") {
-        // Price sensitivity: 0 = only distance matters, 1 = only price matters
-        const priceWeight = prefs.priceSensitivity;      // 0.0 to 1.0
-        const distanceWeight = 1 - prefs.priceSensitivity; // 1.0 to 0.0
+        const priceWeight = prefs.priceSensitivity;
+        const distanceWeight = 1 - prefs.priceSensitivity;
 
         const aScore = (a.price_value ?? 999) * priceWeight + (a.distance_km ?? 0) * distanceWeight;
         const bScore = (b.price_value ?? 999) * priceWeight + (b.distance_km ?? 0) * distanceWeight;
 
         return aScore - bScore;
       }
-      // greedy algorithm for FASTEST that uses driving time if available, otherwise falls back to distance as a proxy for time
-      // FASTEST: Time-based routing (uses driving time if available)
-      // LOGIC:
-      // - If we have real driving time data → use it
-      // - If not → use distance as proxy for time
-      
+
       if (prefs.preference === "fastest") {
         if (a.driving_time_minutes != null && b.driving_time_minutes != null) {
           return a.driving_time_minutes - b.driving_time_minutes;
         }
         return (a.distance_km ?? 0) - (b.distance_km ?? 0);
       }
-      // DEFAULT: Fallback to distance sort
       return 0;
     });
 }
@@ -126,6 +99,9 @@ function getGreeting() {
 
 /** Dublin city centre — used when geolocation is denied or unavailable. */
 const FALLBACK_LOCATION = { lat: 53.3498, lng: -6.2603 };
+
+/** Matches polyline colours in `GoogleMapBackground` for route options UI. */
+const ROUTE_OPTION_COLORS = ["#00E0C6", "#3B82F6", "#F59E0B"] as const;
 
 export default function MapScreen({
   prefs,
@@ -149,12 +125,28 @@ export default function MapScreen({
   const [startY, setStartY] = useState(0);
   const [currentY, setCurrentY] = useState(0);
 
-  // Route state
+  // Route state (Google may return multiple alternatives; user picks active index for turn-by-turn)
   const [selectedStationForRoute, setSelectedStationForRoute] = useState<Station | null>(null);
   const [showRoute, setShowRoute] = useState(false);
-  const [routeInfo, setRouteInfo] = useState<RouteInfo | null>(null);
+  const [routeInfos, setRouteInfos] = useState<RouteInfo[]>([]);
+  const [selectedRouteIndex, setSelectedRouteIndex] = useState(0);
   const [showDirectionsPanel, setShowDirectionsPanel] = useState(false);
   const [showTraffic, setShowTraffic] = useState(false);
+
+  const routeInfo = useMemo(
+    () => routeInfos[selectedRouteIndex] ?? null,
+    [routeInfos, selectedRouteIndex]
+  );
+
+  /** Index of the shortest-duration option (for “Quickest” hint). */
+  const quickestRouteIndex = useMemo(() => {
+    if (routeInfos.length < 2) return null;
+    let best = 0;
+    for (let i = 1; i < routeInfos.length; i++) {
+      if (routeInfos[i].durationValue < routeInfos[best].durationValue) best = i;
+    }
+    return best;
+  }, [routeInfos]);
 
   useEffect(() => {
     if (prefs.activeTab !== activeTab) onPrefsChange({ ...prefs, activeTab });
@@ -205,7 +197,7 @@ export default function MapScreen({
         const data = await fetchEVStations(
           userLocation.lat,
           userLocation.lng,
-          prefs.maxDistanceKm,
+          effectiveEVSearchRadiusKm(prefs.maxDistanceKm),
           prefs.connectors
         );
         if (cancelled) return;
@@ -254,9 +246,10 @@ export default function MapScreen({
       setFuelError(null);
       try {
         const data = await loadFuelStations(
-          userLocation.lat, 
+          userLocation.lat,
           userLocation.lng,
-          prefs.maxDistanceKm // for users filter settings
+          prefs.maxDistanceKm,
+          prefs.fuelType
         );
         if (cancelled) return;
          // Enrich with community-submitted prices from Supabase
@@ -275,27 +268,35 @@ export default function MapScreen({
 
     loadFuel();
     return () => { cancelled = true; };
-  }, [userLocation, prefs.maxDistanceKm]);
+  }, [userLocation, prefs.maxDistanceKm, prefs.fuelType]);
 
 
   // Apply ranking algorithm with memoization
   // calls timsort (O(n log n)) but only when dependencies change (activeTab, stations, prefs)
+  /** Same filters/sort as the list (max distance, fuel type, etc.) — used for tab counts and list. */
+  const fuelRanked = useMemo(
+    () => rankStations(fuelStations, prefs, "fuel"),
+    [fuelStations, prefs]
+  );
+  const evRanked = useMemo(
+    () => rankStations(evStations, prefs, "ev"),
+    [evStations, prefs]
+  );
+
   const rankedStations = useMemo(() => {
-    const base = activeTab === "fuel" ? fuelStations : evStations;
-    const ranked = rankStations(base, prefs);
-    
-    // string match search filter for station names, applied on top of ranked stations
-    // Apply search filter on top of ranked stations (O(n))
-    // linear search through ranked stations to filter by name based on search query
-    if (searchQuery.trim()) {
-      return ranked.filter((station) =>
-        station.name.toLowerCase().includes(searchQuery.toLowerCase())
-      );
-    }
-    
-    // If no search query, return full ranked list
-    return ranked;
-  }, [activeTab, fuelStations, evStations, prefs, searchQuery]);
+    const base = activeTab === "fuel" ? fuelRanked : evRanked;
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return base;
+    return base.filter((station) => station.name.toLowerCase().includes(q));
+  }, [activeTab, fuelRanked, evRanked, searchQuery]);
+
+  /** Align default / active route alternative with Filters “search preference” (nearest / fastest / cheapest→distance). */
+  useEffect(() => {
+    if (routeInfos.length === 0) return;
+    setSelectedRouteIndex(
+      selectRouteIndexForSearchPreference(routeInfos, prefs.preference)
+    );
+  }, [routeInfos, prefs.preference]);
 
   // User actions
   const handleLogout = async () => {
@@ -329,34 +330,29 @@ export default function MapScreen({
 
   // Route handlers
   const handleStationSelectForRoute = (station: Station) => {
-    console.log("🎯 Station selected for route:", station.name);
     setSelectedStationForRoute(station);
     setShowRoute(true);
     setShowDirectionsPanel(false);
+    setRouteInfos([]);
+    setSelectedRouteIndex(0);
   };
 
-  const handleRouteCalculated = (info: RouteInfo) => {
-    console.log("✅ Route info received:", info);
-    setRouteInfo(info);
-  };
+  const handleRoutesCalculated = useCallback((routes: RouteInfo[]) => {
+    setRouteInfos(routes);
+  }, []);
 
   const handleClearRoute = () => {
-    console.log("🧹 Clearing route");
     setShowRoute(false);
     setSelectedStationForRoute(null);
-    setRouteInfo(null);
+    setRouteInfos([]);
+    setSelectedRouteIndex(0);
     setShowDirectionsPanel(false);
     mapRef.current?.clearRoute();
   };
 
-  const handleShowAlternatives = () => {
-    console.log("🔀 Showing alternative routes");
-    mapRef.current?.showAlternativeRoutes();
-  };
-
   const handleToggleTraffic = () => {
     setShowTraffic(!showTraffic);
-    console.log(`🚦 Traffic layer ${!showTraffic ? 'enabled' : 'disabled'}`);
+    devLog(`🚦 Traffic layer ${!showTraffic ? "enabled" : "disabled"}`);
   };
 
   // Drag handlers
@@ -412,7 +408,8 @@ export default function MapScreen({
           selectedStation={selectedStationForRoute}
           showRoute={showRoute}
           showTraffic={showTraffic}
-          onRouteCalculated={handleRouteCalculated}
+          selectedRouteIndex={selectedRouteIndex}
+          onRoutesCalculated={handleRoutesCalculated}
         />
       </div>
 
@@ -423,7 +420,6 @@ export default function MapScreen({
             routeInfo={routeInfo}
             stationName={selectedStationForRoute.name}
             onClose={() => setShowDirectionsPanel(false)}
-            onShowAlternatives={handleShowAlternatives}
           />
         </div>
       )}
@@ -520,8 +516,10 @@ export default function MapScreen({
                 />
                 {searchQuery && (
                   <button
+                    type="button"
                     onClick={() => setSearchQuery("")}
                     className="absolute right-3 top-1/2 -translate-y-1/2"
+                    aria-label="Clear search"
                   >
                     <X className="w-4 h-4 text-white/40 hover:text-white/80" />
                   </button>
@@ -533,7 +531,9 @@ export default function MapScreen({
           {/* Fuel/EV Tabs */}
           <div className="flex gap-2">
             <button
+              type="button"
               onClick={() => setActiveTab("fuel")}
+              aria-pressed={activeTab === "fuel"}
               className={`
                 flex-1 py-2.5 rounded-xl font-semibold text-sm
                 flex items-center justify-center gap-2
@@ -547,11 +547,13 @@ export default function MapScreen({
             >
               <Fuel className="w-4 h-4" />
               <span>Fuel</span>
-              <span className="opacity-70">({fuelStations.length})</span>
+              <span className="opacity-70">({fuelRanked.length})</span>
             </button>
 
             <button
+              type="button"
               onClick={() => setActiveTab("ev")}
+              aria-pressed={activeTab === "ev"}
               className={`
                 flex-1 py-2.5 rounded-xl font-semibold text-sm
                 flex items-center justify-center gap-2
@@ -565,7 +567,7 @@ export default function MapScreen({
             >
               <Zap className="w-4 h-4" />
               <span>EV</span>
-              <span className="opacity-70">({evStations.length})</span>
+              <span className="opacity-70">({evRanked.length})</span>
             </button>
           </div>
         </div>
@@ -585,6 +587,15 @@ export default function MapScreen({
                   </div>
                   <p className="text-white/60 text-xs">
                     To {selectedStationForRoute.name}
+                  </p>
+                  <p className="text-white/35 text-[10px] mt-1 leading-snug">
+                    <span className="capitalize text-white/50">{prefs.preference}</span> sort — same
+                    as the station list. Route alternatives default to that sort.
+                    {prefs.maxDistanceKm > 0 ? (
+                      <> List stations: within {prefs.maxDistanceKm} km.</>
+                    ) : (
+                      <> List: no distance cap.</>
+                    )}
                   </p>
                 </div>
                 
@@ -626,9 +637,76 @@ export default function MapScreen({
               </div>
             </div>
 
+            {/* Route alternatives — colours match map polylines */}
+            {routeInfos.length > 1 && (
+              <div className="px-4 pb-3 border-t border-white/5 pt-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-white/45 mb-2">
+                  Route options
+                </p>
+                <p className="text-[11px] text-white/40 mb-3 leading-snug">
+                  Tap to highlight that path on the map and update directions below.
+                </p>
+                <div
+                  className="flex gap-2.5 overflow-x-auto pb-1 -mx-1 px-1 snap-x snap-mandatory [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+                  role="tablist"
+                  aria-label="Choose route alternative"
+                >
+                  {routeInfos.map((r, i) => {
+                    const color = ROUTE_OPTION_COLORS[i % ROUTE_OPTION_COLORS.length];
+                    const active = selectedRouteIndex === i;
+                    const isQuickest = quickestRouteIndex === i;
+                    return (
+                      <button
+                        key={i}
+                        type="button"
+                        role="tab"
+                        aria-selected={active}
+                        onClick={() => setSelectedRouteIndex(i)}
+                        className={`
+                          shrink-0 snap-start text-left rounded-2xl pl-3 pr-3 py-2.5 min-w-[118px] max-w-[150px] transition
+                          border relative overflow-hidden
+                          ${
+                            active
+                              ? "bg-white/[0.08] border-white/25 shadow-[0_0_0_1px_rgba(255,255,255,0.06)]"
+                              : "bg-white/[0.03] border-white/10 hover:bg-white/[0.06] hover:border-white/15"
+                          }
+                        `}
+                      >
+                        <span
+                          className="absolute left-0 top-0 bottom-0 w-1 rounded-l-2xl"
+                          style={{ backgroundColor: color }}
+                          aria-hidden
+                        />
+                        <div className="pl-2 flex flex-col gap-0.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span
+                              className="inline-flex h-1.5 w-1.5 rounded-full shrink-0"
+                              style={{ backgroundColor: color }}
+                            />
+                            <span className="text-[10px] font-semibold uppercase tracking-wide text-white/55">
+                              Route {i + 1}
+                            </span>
+                            {isQuickest && (
+                              <span className="inline-flex items-center gap-0.5 rounded-md bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-300/95 border border-emerald-500/25">
+                                <Timer className="w-2.5 h-2.5" aria-hidden />
+                                Quickest
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-base font-bold text-white leading-tight tabular-nums">
+                            {r.duration}
+                          </span>
+                          <span className="text-[11px] text-white/50 tabular-nums">{r.distance}</span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* Action Buttons */}
             <div className="px-4 pb-3 flex gap-2">
-              {/* View Directions */}
               <button
                 onClick={() => setShowDirectionsPanel(true)}
                 className="
@@ -642,75 +720,62 @@ export default function MapScreen({
                 <Navigation className="w-3 h-3" />
                 Directions
               </button>
-
-              {/* Show Alternatives */}
-              <button
-                onClick={handleShowAlternatives}
-                className="
-                  flex-1 py-2 rounded-xl
-                  bg-white/5 hover:bg-white/10
-                  border border-white/10
-                  text-white text-xs font-semibold
-                  flex items-center justify-center gap-2
-                  transition
-                "
-              >
-                <RouteIcon className="w-3 h-3" />
-                Alternatives
-              </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* ---------- FLOATING ACTION BUTTONS ---------- */}
-      <div className="absolute right-4 bottom-32 z-10 flex flex-col gap-3 pointer-events-none">
-        
-        {/* 🆕 Traffic Toggle */}
+      {/* ---------- FLOATING ACTION BUTTONS (solid fills — gradients on circles caused clipping artifacts) ---------- */}
+      <div
+        className="absolute right-4 z-20 flex flex-col gap-4 pointer-events-none"
+        style={{
+          bottom: "max(10rem, calc(env(safe-area-inset-bottom, 0px) + 9rem))",
+        }}
+      >
         <button
+          type="button"
           onClick={handleToggleTraffic}
           className={`
-            w-12 h-12 rounded-full pointer-events-auto
+            w-12 h-12 shrink-0 rounded-full pointer-events-auto
             backdrop-blur-md border transition shadow-lg
             flex items-center justify-center
             ${showTraffic
-              ? 'bg-orange-500/20 border-orange-500/50'
-              : 'bg-[#0D0F14]/90 border-white/10'
+              ? "bg-orange-500/20 border-orange-500/50"
+              : "bg-[#0D0F14]/90 border-white/10"
             }
           `}
           aria-label="Toggle traffic"
         >
-          <Layers className={`w-5 h-5 ${showTraffic ? 'text-orange-400' : 'text-white/90'}`} />
+          <Layers className={`w-5 h-5 ${showTraffic ? "text-orange-400" : "text-white/90"}`} />
         </button>
 
-        {/* Refresh Location */}
         <button
+          type="button"
           onClick={handleRefresh}
           disabled={locationLoading}
           className="
-            w-12 h-12 rounded-full pointer-events-auto
+            w-12 h-12 shrink-0 rounded-full pointer-events-auto
             bg-[#0D0F14]/90 backdrop-blur-md
             border border-white/10 shadow-lg
             flex items-center justify-center
             hover:bg-white/10 transition
             disabled:opacity-50
           "
-          aria-label="Refresh"
+          aria-label="Refresh location"
         >
-          <RefreshCw className={`w-5 h-5 text-white/90 ${locationLoading ? 'animate-spin' : ''}`} />
+          <RefreshCw className={`w-5 h-5 text-white/90 ${locationLoading ? "animate-spin" : ""}`} />
         </button>
 
-        {/* Recenter Map */}
         <button
+          type="button"
           onClick={handleRecenter}
           className="
-            w-12 h-12 rounded-full pointer-events-auto
-            bg-gradient-to-r from-[#00E0C6] to-[#0097FF]
-            shadow-[0_0_20px_rgba(0,224,198,0.4)]
+            w-12 h-12 shrink-0 rounded-full pointer-events-auto
+            bg-[#00E0C6] border border-[#00c4b0] shadow-[0_4px_20px_rgba(0,224,198,0.35)]
             flex items-center justify-center
-            hover:scale-105 active:scale-95 transition
+            hover:brightness-110 active:scale-95 transition
           "
-          aria-label="Recenter map"
+          aria-label="Recenter map on your location"
         >
           <Navigation className="w-5 h-5 text-[#0D0F14]" />
         </button>
@@ -719,7 +784,9 @@ export default function MapScreen({
       {/* ---------- 🆕 DRAGGABLE BOTTOM SHEET (List) ---------- */}
       {showList && !showDirectionsPanel && (
         <div 
-          className="absolute bottom-0 inset-x-0 z-20 px-4 pb-24 transition-all duration-300 ease-out"
+          role="region"
+          aria-label="Nearby stations list"
+          className="absolute inset-x-0 z-20 px-4 pb-3 transition-all duration-300 ease-out bottom-28"
           style={{ 
             height: getSheetHeight(),
             touchAction: 'none'
@@ -873,7 +940,7 @@ export default function MapScreen({
             setSheetState("half");
           }}
           className="
-            absolute bottom-28 right-4 z-10
+            absolute bottom-[6.75rem] right-4 z-30
             w-12 h-12 rounded-full pointer-events-auto
             bg-gradient-to-r from-[#00E0C6] to-[#0097FF]
             shadow-[0_0_20px_rgba(0,224,198,0.4)]

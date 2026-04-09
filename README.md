@@ -35,31 +35,28 @@ A mobile-first Progressive Web App (PWA) that helps drivers in Ireland find and 
 
 ---
 
-  
-```
+### Repository layout
 
+```
 src/
 ├── api/                        # Data fetching
 │   ├── fuelStations.ts         # Google Places fuel station loader
 │   ├── googlePlaces.ts         # Google Places API wrapper
-│   ├── openChargeMap.ts        # OpenChargeMap EV API wrapper
+│   ├── openChargeMap.ts        # Open Charge Map (prefers Netlify proxy)
 │   ├── favorites.ts            # Supabase favourites CRUD
 │   ├── stationUpdates.ts       # Community price update submissions
-│   └── enrichStationsWithPrices.ts  # Enriches stations with community prices
+│   └── enrichStationsWithPrices.ts
 ├── components/
 │   ├── layout/                 # MobileFrame, BottomNav
 │   ├── map/                    # GoogleMapBackground, DirectionsPanel
-│   ├── screens/                # All app screens
-│   └── shared/                 # StationCard and other reusable components
-├── lib/
-│   ├── authContext.tsx          # Supabase auth context + profile
-│   ├── preferences.ts          # User preferences type + localStorage helpers
-│   ├── supabaseClient.ts       # Supabase client
-│   └── distance.ts             # Haversine distance calculation
+│   ├── screens/                # App screens
+│   └── shared/
+├── lib/                        # Auth, preferences, distance, logging
 └── App.tsx                     # Screen router + global state
-netlify/
-└── functions/
-    └── fetch-fuel-stations.ts  # Serverless proxy for Google Places API
+
+netlify/functions/
+├── fetch-fuel-stations.ts      # Proxies Google Places Nearby Search (API key on server)
+└── fetch-openchargemap.ts      # Proxies Open Charge Map (OCM key on server)
 ```
 
 ---
@@ -73,17 +70,31 @@ netlify/
 - A Google Maps API key (with Places API and Directions API enabled)
 - An OpenChargeMap API key
 
-### Environment Variables
+### Environment variables
 
-Create a `.env` file in the project root:
+1. Copy the template and fill in values (never commit secrets):
 
-```env
-VITE_SUPABASE_URL=your_supabase_project_url
-VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
-VITE_GOOGLE_MAPS_API_KEY=your_google_maps_api_key
-VITE_OCM_API_KEY=your_opencharge_map_api_key
-```
-For the Netlify function, set `GOOGLE_MAPS_API_KEY` in your Netlify environment variables dashboard.
+   ```bash
+   cp .env.example .env
+   ```
+
+2. **Local development (`npm run dev`)** — variables prefixed with `VITE_` are exposed to the browser. Use **`.env`** or **`.env.local`**.
+
+| Variable | Purpose |
+|----------|---------|
+| `VITE_SUPABASE_URL` | Supabase project URL |
+| `VITE_SUPABASE_ANON_KEY` | Supabase anonymous key |
+| `VITE_GOOGLE_MAPS_API_KEY` | Google Maps JS + Places client-side |
+| `VITE_OCM_API_KEY` | *Optional* if you are **not** running `netlify dev`: allows direct Open Charge Map calls from the browser for EV data |
+
+3. **Production (Netlify)** — set these in **Site configuration → Environment variables** (server-side; not bundled into the client):
+
+| Variable | Purpose |
+|----------|---------|
+| `GOOGLE_MAPS_API_KEY` | Used by `fetch-fuel-stations` (same Google key as Places; keeps Places requests off the client CORS path). Can mirror `VITE_GOOGLE_MAPS_API_KEY` in the dashboard. |
+| `OCM_API_KEY` | **Recommended** for EV charging: used by `fetch-openchargemap` so the Open Charge Map key does **not** need to ship in the frontend. The app tries this proxy first, then falls back to `VITE_OCM_API_KEY` for local Vite-only dev. |
+
+Restrict API keys in Google Cloud and Open Charge Map dashboards (HTTP referrer / app limits) even when using `VITE_` keys.
 
 ### Supabase Tables
 
@@ -146,6 +157,19 @@ netlify dev
 npm run build
 ```
 
+### Tests
+
+Unit tests use [Vitest](https://vitest.dev/) (`src/**/*.test.ts`).
+
+```bash
+npm run test        # run once (also used in CI)
+npm run test:watch  # watch mode during development
+```
+
+### Continuous integration
+
+[GitHub Actions](.github/workflows/ci.yml) runs **ESLint**, **Vitest**, and **`npm run build`** on pushes and pull requests to `main`, `master`, and `develop`.
+
 ---
 
 ## Deployment
@@ -154,6 +178,8 @@ The app is configured to deploy on Netlify. Push to your connected branch and Ne
 1. Run `npm run build`
 2. Publish the `dist/` folder
 3. Deploy the `netlify/functions/` serverless functions
+
+Configure **`GOOGLE_MAPS_API_KEY`** and **`OCM_API_KEY`** in Netlify (see [Environment variables](#environment-variables) above). Without `OCM_API_KEY`, production EV requests fall back only if `VITE_OCM_API_KEY` is present in the build (not ideal for hiding keys).
 
 ---
 

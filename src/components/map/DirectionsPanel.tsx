@@ -1,13 +1,12 @@
 // src/components/map/DirectionsPanel.tsx
 
-import { Navigation, X, MapPin, Clock, Route as RouteIcon } from "lucide-react";
+import { Navigation, X, MapPin, Clock } from "lucide-react";
 import type { RouteInfo } from "./GoogleMapBackground";
 
 interface Props {
   routeInfo: RouteInfo | null;
   stationName: string;
   onClose: () => void;
-  onShowAlternatives: () => void;
 }
 
 // Strip HTML from Google's instructions
@@ -39,11 +38,10 @@ function getDirectionIcon(maneuver?: string): string {
   return icons[maneuver] || "→";
 }
 
-export default function DirectionsPanel({ 
-  routeInfo, 
-  stationName, 
+export default function DirectionsPanel({
+  routeInfo,
+  stationName,
   onClose,
-  onShowAlternatives 
 }: Props) {
   if (!routeInfo) return null;
 
@@ -88,13 +86,9 @@ export default function DirectionsPanel({
           </div>
         </div>
 
-        <button
-          onClick={onShowAlternatives}
-          className="w-full py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm font-semibold transition flex items-center justify-center gap-2"
-        >
-          <RouteIcon className="w-4 h-4" />
-          Show Alternative Routes
-        </button>
+        <p className="text-white/45 text-xs text-center">
+          Use <span className="text-white/70">Route options</span> on the map to switch between alternatives.
+        </p>
       </div>
 
       {/* Turn-by-turn directions */}

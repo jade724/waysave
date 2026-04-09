@@ -1,9 +1,19 @@
 // src/components/map/GoogleMapBackground.tsx
 
-import { useEffect, useRef, useImperativeHandle, forwardRef } from "react";
-import type { Station } from "../../App";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useImperativeHandle,
+  forwardRef,
+  useCallback,
+  useState,
+} from "react";
+import type { Station } from "../../types/station";
 
 const GOOGLE_MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+
+const ROUTE_COLORS = ["#00E0C6", "#3B82F6", "#F59E0B"];
 
 // Dark map styling
 const DARK_MAP_STYLE: google.maps.MapTypeStyle[] = [
@@ -20,7 +30,6 @@ const DARK_MAP_STYLE: google.maps.MapTypeStyle[] = [
   { featureType: "administrative", elementType: "geometry.stroke", stylers: [{ color: "#1F2937" }] },
 ];
 
-// Route information interface
 export interface RouteInfo {
   distance: string;
   duration: string;
@@ -37,49 +46,39 @@ interface Props {
   selectedStation?: Station | null;
   showRoute?: boolean;
   showTraffic?: boolean;
-  onRouteCalculated?: (info: RouteInfo) => void;
+  /** Which route is emphasized (0..n-1). Updates polyline weights without refetching. */
+  selectedRouteIndex?: number;
+  /** Called once per successful directions request with one entry per returned route. */
+  onRoutesCalculated?: (routes: RouteInfo[]) => void;
 }
 
 export interface MapHandle {
   recenter: () => void;
   clearRoute: () => void;
-  showAlternativeRoutes: () => void;
 }
 
-// Singleton loader for Google Maps
 let googleMapsPromise: Promise<void> | null = null;
 
 function loadGoogleMaps(): Promise<void> {
   if (window.google?.maps) {
-    console.log("✅ Google Maps already loaded");
     return Promise.resolve();
   }
 
   if (!googleMapsPromise) {
     googleMapsPromise = new Promise((resolve, reject) => {
       if (!GOOGLE_MAPS_KEY) {
-        console.error("❌ Google Maps API key is missing!");
         reject(new Error("Google Maps API key not found"));
         return;
       }
 
-      console.log("📍 Loading Google Maps API...");
-      
       const script = document.createElement("script");
       script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_KEY}&loading=async&libraries=geometry`;
       script.async = true;
       script.defer = true;
-      
-      script.onload = () => {
-        console.log("✅ Google Maps API loaded successfully");
-        resolve();
-      };
-      
-      script.onerror = (error) => {
-        console.error("❌ Failed to load Google Maps:", error);
-        reject(error);
-      };
-      
+
+      script.onload = () => resolve();
+      script.onerror = (error) => reject(error);
+
       document.head.appendChild(script);
     });
   }
@@ -87,108 +86,132 @@ function loadGoogleMaps(): Promise<void> {
   return googleMapsPromise;
 }
 
+function legToRouteInfo(leg: google.maps.DirectionsLeg): RouteInfo {
+  return {
+    distance: leg.distance?.text || "Unknown",
+    duration: leg.duration?.text || "Unknown",
+    distanceValue: leg.distance?.value || 0,
+    durationValue: leg.duration?.value || 0,
+    steps: leg.steps || [],
+  };
+}
+
 const GoogleMapBackground = forwardRef<MapHandle, Props>(
-  ({ 
-    userLocation, 
-    markers, 
-    zoom = 13, 
-    onPinSelect, 
-    selectedStation, 
-    showRoute = false,
-    showTraffic = false,
-    onRouteCalculated 
-  }, ref) => {
-    
+  (
+    {
+      userLocation,
+      markers,
+      zoom = 13,
+      onPinSelect,
+      selectedStation,
+      showRoute = false,
+      showTraffic = false,
+      selectedRouteIndex = 0,
+      onRoutesCalculated,
+    },
+    ref
+  ) => {
     const mapRef = useRef<HTMLDivElement | null>(null);
     const mapInstance = useRef<google.maps.Map | null>(null);
     const markerRefs = useRef<google.maps.Marker[]>([]);
     const userMarkerRef = useRef<google.maps.Marker | null>(null);
     const directionsService = useRef<google.maps.DirectionsService | null>(null);
     const directionsRenderers = useRef<google.maps.DirectionsRenderer[]>([]);
+    const lastDirectionsResultRef = useRef<google.maps.DirectionsResult | null>(null);
+    const prevSelectedRouteIndexRef = useRef<number | null>(null);
     const trafficLayer = useRef<google.maps.TrafficLayer | null>(null);
+    const [mapReady, setMapReady] = useState(false);
+    const onRoutesCalculatedRef = useRef(onRoutesCalculated);
+    const selectedRouteIndexRef = useRef(selectedRouteIndex);
 
-    // Clear all routes
-    const clearRoute = () => {
-      directionsRenderers.current.forEach(renderer => {
-        renderer.setMap(null);
-      });
+    useLayoutEffect(() => {
+      onRoutesCalculatedRef.current = onRoutesCalculated;
+    }, [onRoutesCalculated]);
+
+    useLayoutEffect(() => {
+      selectedRouteIndexRef.current = selectedRouteIndex;
+    }, [selectedRouteIndex]);
+
+    const clearRoute = useCallback(() => {
+      directionsRenderers.current.forEach((renderer) => renderer.setMap(null));
       directionsRenderers.current = [];
-      console.log("🧹 Route cleared");
-    };
+      lastDirectionsResultRef.current = null;
+      prevSelectedRouteIndexRef.current = null;
+    }, []);
 
-    // Show alternative routes (up to 3)
-    const showAlternativeRoutes = () => {
-      if (!selectedStation || !directionsService.current || !mapInstance.current) {
-        console.warn("⚠️ Cannot show alternatives - missing data");
-        return;
-      }
+    /**
+     * Full setOptions is required for reliable stroke updates; Maps may still nudge the camera.
+     * When `preserveCamera` is true (user switched route option), capture center/zoom and restore
+     * so the view stays put for comparing polylines. Initial route draw uses `preserveCamera: false`
+     * so `fitBounds` in the directions callback is not undone.
+     */
+    const applyRouteHighlight = useCallback(
+      (activeIndex: number, preserveCamera: boolean) => {
+        const result = lastDirectionsResultRef.current;
+        const map = mapInstance.current;
+        if (!result?.routes?.length || !map) return;
 
-      console.log("🔀 Calculating alternative routes...");
-
-      directionsService.current.route(
-        {
-          origin: new google.maps.LatLng(userLocation.lat, userLocation.lng),
-          destination: new google.maps.LatLng(selectedStation.lat, selectedStation.lng),
-          travelMode: google.maps.TravelMode.DRIVING,
-          provideRouteAlternatives: true,
-        },
-        (result, status) => {
-          if (status === google.maps.DirectionsStatus.OK && result) {
-            clearRoute();
-
-            const colors = ["#00E0C6", "#3B82F6", "#F59E0B"];
-            
-            result.routes.forEach((route, index) => {
-              const renderer = new google.maps.DirectionsRenderer({
-                map: mapInstance.current!,
-                directions: result,
-                routeIndex: index,
-                suppressMarkers: true,
-                polylineOptions: {
-                  strokeColor: colors[index] || "#FFFFFF",
-                  strokeWeight: index === 0 ? 5 : 3,
-                  strokeOpacity: index === 0 ? 0.9 : 0.6,
-                },
-              });
-
-              directionsRenderers.current.push(renderer);
-
-              const leg = route.legs[0];
-              console.log(`Route ${index + 1}: ${leg.distance?.text} - ${leg.duration?.text}`);
-            });
-
-            console.log(`✅ Showing ${result.routes.length} alternative routes`);
-          } else {
-            console.error("❌ Failed to calculate alternatives:", status);
-          }
+        let center: google.maps.LatLng | undefined;
+        let zoomLevel: number | undefined;
+        if (preserveCamera) {
+          center = map.getCenter() ?? undefined;
+          zoomLevel = map.getZoom() ?? undefined;
+          if (!center || zoomLevel === undefined) return;
         }
-      );
-    };
 
-    // Expose methods to parent
+        directionsRenderers.current.forEach((renderer, i) => {
+          const selected = i === activeIndex;
+          renderer.setOptions({
+            map,
+            directions: result,
+            routeIndex: i,
+            suppressMarkers: true,
+            preserveViewport: true,
+            polylineOptions: {
+              strokeColor: selected
+                ? ROUTE_COLORS[i % ROUTE_COLORS.length]
+                : "#4B5563",
+              strokeWeight: selected ? 9 : 4,
+              strokeOpacity: selected ? 1 : 0.28,
+              zIndex: selected ? 100 : 10,
+            },
+          });
+        });
+
+        if (!preserveCamera || !center || zoomLevel === undefined) return;
+
+        const restore = () => {
+          map.setCenter(center);
+          map.setZoom(zoomLevel);
+        };
+        restore();
+        requestAnimationFrame(restore);
+        requestAnimationFrame(() => requestAnimationFrame(restore));
+        window.setTimeout(restore, 0);
+        window.setTimeout(restore, 48);
+        google.maps.event.addListenerOnce(map, "idle", restore);
+      },
+      []
+    );
+
     useImperativeHandle(ref, () => ({
       recenter: () => {
         if (mapInstance.current) {
           mapInstance.current.panTo(userLocation);
           mapInstance.current.setZoom(zoom);
-          console.log("🎯 Map recentered");
         }
       },
       clearRoute,
-      showAlternativeRoutes,
     }));
 
-    // Initialize map and markers
+    // Map + markers
     useEffect(() => {
       let cancelled = false;
 
       loadGoogleMaps().then(() => {
         if (cancelled || !mapRef.current) return;
 
-        // Create map once
         if (!mapInstance.current) {
-          console.log("🏗️ Creating map instance...");
-          
           mapInstance.current = new google.maps.Map(mapRef.current, {
             center: userLocation,
             zoom,
@@ -204,13 +227,12 @@ const GoogleMapBackground = forwardRef<MapHandle, Props>(
 
           directionsService.current = new google.maps.DirectionsService();
           trafficLayer.current = new google.maps.TrafficLayer();
-          console.log("✅ Map created successfully");
+          setMapReady(true);
         }
 
         const map = mapInstance.current;
         map.setCenter(userLocation);
 
-        // User location marker
         if (userMarkerRef.current) {
           userMarkerRef.current.setPosition(userLocation);
         } else {
@@ -230,15 +252,13 @@ const GoogleMapBackground = forwardRef<MapHandle, Props>(
           });
         }
 
-        // Clear old markers
         markerRefs.current.forEach((m) => m.setMap(null));
         markerRefs.current = [];
 
-        // Create station markers
         markers.forEach((station) => {
           const isEV = station.type === "ev";
           const isSelected = selectedStation?.id === station.id;
-          
+
           const marker = new google.maps.Marker({
             position: { lat: station.lat, lng: station.lng },
             map,
@@ -256,100 +276,117 @@ const GoogleMapBackground = forwardRef<MapHandle, Props>(
           });
 
           marker.addListener("click", () => {
-            console.log("📍 Station clicked:", station.name);
             onPinSelect(station);
           });
-          
+
           markerRefs.current.push(marker);
         });
-
-        console.log(`✅ Rendered ${markers.length} station markers`);
       });
 
       return () => {
         cancelled = true;
       };
-    }, [userLocation, markers, zoom, onPinSelect, selectedStation]);
+    }, [userLocation, markers, zoom, onPinSelect, selectedStation?.id]);
 
-    // Route calculation effect
+    // One directions request with alternatives; draw all polylines; parent picks active route for turn-by-turn.
+    // deps use station id/lat/lng primitives so parent object identity changes do not refetch routes.
     useEffect(() => {
-      if (!showRoute || !selectedStation || !directionsService.current || !mapInstance.current) {
-        if (directionsRenderers.current.length > 0 && !showRoute) {
+      if (
+        !mapReady ||
+        !showRoute ||
+        !selectedStation ||
+        !directionsService.current ||
+        !mapInstance.current
+      ) {
+        if (!showRoute && directionsRenderers.current.length > 0) {
           clearRoute();
         }
         return;
       }
 
-      console.log("🛣️ Calculating route to:", selectedStation.name);
+      const map = mapInstance.current;
+      const origin = new google.maps.LatLng(userLocation.lat, userLocation.lng);
+      const destination = new google.maps.LatLng(selectedStation.lat, selectedStation.lng);
 
       directionsService.current.route(
         {
-          origin: new google.maps.LatLng(userLocation.lat, userLocation.lng),
-          destination: new google.maps.LatLng(selectedStation.lat, selectedStation.lng),
+          origin,
+          destination,
           travelMode: google.maps.TravelMode.DRIVING,
-          provideRouteAlternatives: false,
+          provideRouteAlternatives: true,
         },
         (result, status) => {
-          if (status === google.maps.DirectionsStatus.OK && result) {
-            console.log("✅ Route calculated successfully");
-            
-            clearRoute();
+          if (status !== google.maps.DirectionsStatus.OK || !result?.routes?.length) {
+            return;
+          }
 
+          clearRoute();
+          lastDirectionsResultRef.current = result;
+
+          result.routes.forEach((_route, index) => {
+            const selected = index === selectedRouteIndexRef.current;
             const renderer = new google.maps.DirectionsRenderer({
-              map: mapInstance.current!,
+              map,
+              directions: result,
+              routeIndex: index,
               suppressMarkers: true,
+              preserveViewport: index > 0,
               polylineOptions: {
-                strokeColor: "#00E0C6",
-                strokeWeight: 5,
-                strokeOpacity: 0.8,
+                strokeColor: selected
+                  ? ROUTE_COLORS[index % ROUTE_COLORS.length]
+                  : "#4B5563",
+                strokeWeight: selected ? 9 : 4,
+                strokeOpacity: selected ? 1 : 0.28,
+                zIndex: selected ? 100 : 10,
               },
             });
-
-            renderer.setDirections(result);
             directionsRenderers.current.push(renderer);
+          });
 
-            const route = result.routes[0];
-            if (route?.legs[0]) {
-              const leg = route.legs[0];
-              
-              const routeInfo: RouteInfo = {
-                distance: leg.distance?.text || "Unknown",
-                duration: leg.duration?.text || "Unknown",
-                distanceValue: leg.distance?.value || 0,
-                durationValue: leg.duration?.value || 0,
-                steps: leg.steps || [],
-              };
+          prevSelectedRouteIndexRef.current = selectedRouteIndexRef.current;
 
-              console.log(`📍 Distance: ${routeInfo.distance}`);
-              console.log(`⏱️ Duration: ${routeInfo.duration}`);
+          const routeInfos: RouteInfo[] = result.routes.map((route) =>
+            legToRouteInfo(route.legs[0])
+          );
+          onRoutesCalculatedRef.current?.(routeInfos);
 
-              onRouteCalculated?.(routeInfo);
-
-              // ✅ FIX: Use proper Padding type
-              const bounds = new google.maps.LatLngBounds();
-              bounds.extend(new google.maps.LatLng(userLocation.lat, userLocation.lng));
-              bounds.extend(new google.maps.LatLng(selectedStation.lat, selectedStation.lng));
-              
-              // Use number for padding instead of object
-              mapInstance.current?.fitBounds(bounds, 80);
-            }
-          } else {
-            console.error("❌ Route calculation failed:", status);
-          }
+          const bounds = new google.maps.LatLngBounds();
+          bounds.extend(origin);
+          bounds.extend(destination);
+          result.routes.forEach((route) => {
+            route.overview_path?.forEach((p) => bounds.extend(p));
+          });
+          map.fitBounds(bounds, 64);
         }
       );
-    }, [showRoute, selectedStation, userLocation, onRouteCalculated]);
+    }, [
+      mapReady,
+      showRoute,
+      selectedStation,
+      userLocation.lat,
+      userLocation.lng,
+      clearRoute,
+    ]);
 
-    // Traffic layer toggle
+    // Update polyline emphasis when user picks another alternative — preserve camera so they can compare routes.
+    useEffect(() => {
+      if (directionsRenderers.current.length === 0) return;
+
+      const prev = prevSelectedRouteIndexRef.current;
+      const userSwappedAlternative =
+        prev !== null && prev !== selectedRouteIndex;
+      prevSelectedRouteIndexRef.current = selectedRouteIndex;
+
+      applyRouteHighlight(selectedRouteIndex, userSwappedAlternative);
+    }, [selectedRouteIndex, applyRouteHighlight]);
+
     useEffect(() => {
       if (!trafficLayer.current || !mapInstance.current) return;
 
       if (showTraffic) {
         trafficLayer.current.setMap(mapInstance.current);
-        console.log("🚦 Traffic layer enabled");
       } else {
         trafficLayer.current.setMap(null);
-        console.log("🚫 Traffic layer disabled");
       }
     }, [showTraffic]);
 

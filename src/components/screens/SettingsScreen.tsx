@@ -18,11 +18,11 @@ export default function SettingsScreen({ onBack, prefs, onPrefsChange }: Props) 
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
         <button
+          type="button"
           onClick={onBack}
           className="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center hover:bg-white/10 transition"
-          
-            aria-label="Go back"
-          >
+          aria-label="Go back"
+        >
           <ArrowLeft className="w-5 h-5 text-white/80" />
         </button>
         <h1 className="text-white text-2xl font-bold">Settings</h1>
@@ -73,19 +73,25 @@ export default function SettingsScreen({ onBack, prefs, onPrefsChange }: Props) 
               <div className="flex items-center justify-between mb-3">
                 <span className="text-white font-semibold">Max Search Distance</span>
                 
-                <span className="text-[#00E0C6] font-bold">
-                  {prefs.maxDistanceKm} {distanceUnit}
+                <span className="text-[#00E0C6] font-bold tabular-nums">
+                  {prefs.maxDistanceKm < 10
+                    ? prefs.maxDistanceKm.toFixed(1)
+                    : Math.round(prefs.maxDistanceKm)}{" "}
+                  {distanceUnit}
                 </span>
 
                 </div>
               <input
                 type="range"
-                min="5"
+                min="0.1"
                 max="100"
-                step="5"
+                step="0.1"
                 value={prefs.maxDistanceKm}
                 onChange={(e) =>
-                  onPrefsChange({ ...prefs, maxDistanceKm: parseInt(e.target.value) })
+                  onPrefsChange({
+                    ...prefs,
+                    maxDistanceKm: parseFloat(e.target.value),
+                  })
                 }
                 className="w-full h-2 rounded-full appearance-none cursor-pointer bg-white/10
                   [&::-webkit-slider-thumb]:appearance-none
@@ -98,7 +104,7 @@ export default function SettingsScreen({ onBack, prefs, onPrefsChange }: Props) 
                   [&::-webkit-slider-thumb]:cursor-pointer"
               />
               <div className="flex justify-between text-xs text-white/40 mt-2">
-                <span>5 km</span>
+                <span>0.1 km</span>
                 <span>100 km</span>
               </div>
             </div>
@@ -118,13 +124,14 @@ export default function SettingsScreen({ onBack, prefs, onPrefsChange }: Props) 
               <div className="grid grid-cols-3 gap-2">
                 {(["nearest", "cheapest", "fastest"] as const).map((sort) => (
                   <button
+                    type="button"
                     key={sort}
                     role="radio"
                     aria-checked={prefs.preference === sort}
                     onClick={() => onPrefsChange({ ...prefs, preference: sort })}
                     className={`
                       py-2 px-3 rounded-xl text-xs font-semibold capitalize transition
-                      $ ${prefs.preference === sort
+                      ${prefs.preference === sort
                         ? "bg-gradient-to-r from-[#00E0C6] to-[#0097FF] text-[#0D0F14]"
                         : "bg-white/5 text-white/60 hover:bg-white/10"
                       }
@@ -143,6 +150,7 @@ export default function SettingsScreen({ onBack, prefs, onPrefsChange }: Props) 
               <div className="grid grid-cols-2 gap-2">
                 {(["fuel", "ev"] as const).map((tab) => (
                   <button
+                    type="button"
                     key={tab}
                     role="radio"
                     aria-checked={prefs.activeTab === tab}
@@ -191,10 +199,10 @@ export default function SettingsScreen({ onBack, prefs, onPrefsChange }: Props) 
           </h2>
           
           <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden">
-            <div className="w-full p-4 flex items-center justify-between"></div>
+            <div className="w-full p-4 flex items-center justify-between">
               <span className="text-white font-semibold">App Language</span>
               <span className="text-white/50">English</span>
-            
+            </div>
           </div>
         </div>
 
