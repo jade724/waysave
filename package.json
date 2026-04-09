@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:netlify": "mkdir -p .netlify-tmp && TMPDIR=\"$(pwd)/.netlify-tmp\" netlify dev",
+    "dev:netlify": "mkdir -p .netlify-tmp && TMPDIR=\"$(pwd)/.netlify-tmp\" npx --yes netlify-cli dev",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "test": "vitest run",
@@ -16,7 +16,6 @@
     "@supabase/supabase-js": "^2.89.0",
     "framer-motion": "^12.23.24",
     "lucide-react": "^0.487.0",
-    "netlify-cli": "^24.6.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

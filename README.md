@@ -144,12 +144,13 @@ npm install
 npm run dev
 ```
 
-For local Netlify function testing:
+For local Netlify function testing (API proxies, functions on port 8888):
 
 ```bash
-npm install -g netlify-cli
-netlify dev
+npm run dev:netlify
 ```
+
+That runs `npx netlify-cli dev` (no global install). Alternatively: `npm install -g netlify-cli` then `netlify dev`.
 
 ### Build
 

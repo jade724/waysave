@@ -28,7 +28,6 @@
         "npm:framer-motion@^12.23.24",
         "npm:globals@^16.5.0",
         "npm:lucide-react@0.487",
-        "npm:netlify-cli@^24.6.1",
         "npm:postcss@^8.5.6",
         "npm:react-dom@^19.2.0",
         "npm:react@^19.2.0",
