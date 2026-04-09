@@ -13,21 +13,25 @@ interface Props {
   onPrefsChange: (next: UserPreferences) => void;
 }
 
+function initialLocationPermissionLabel(): string {
+  if (typeof navigator === "undefined" || !navigator.geolocation) {
+    return "Not available in this browser";
+  }
+  if (!navigator.permissions?.query) {
+    return "Status not reported — use “Test” below";
+  }
+  return "…";
+}
+
 export default function SettingsScreen({ onBack, prefs, onPrefsChange }: Props) {
   const distanceUnit = "km";
   const { showToast } = useToast();
-  const [locationPermissionLabel, setLocationPermissionLabel] = useState("…");
+  const [locationPermissionLabel, setLocationPermissionLabel] = useState(initialLocationPermissionLabel);
 
   useEffect(() => {
-    if (!navigator.geolocation) {
-      setLocationPermissionLabel("Not available in this browser");
-      return;
-    }
+    if (typeof navigator === "undefined" || !navigator.geolocation) return;
     const perm = navigator.permissions?.query?.bind(navigator.permissions);
-    if (!perm) {
-      setLocationPermissionLabel("Status not reported — use “Test” below");
-      return;
-    }
+    if (!perm) return;
     perm({ name: "geolocation" as PermissionName })
       .then((status) => {
         const label =

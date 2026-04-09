@@ -243,11 +243,11 @@ const GoogleMapBackground = forwardRef<MapHandle, Props>(
     // Create map once (center picks up latest GPS via ref when script finishes loading).
     useEffect(() => {
       let cancelled = false;
-      setMapLoadError(null);
 
       loadGoogleMaps()
         .then(() => {
           if (cancelled || !mapRef.current) return;
+          setMapLoadError(null);
 
           if (!mapInstance.current) {
             const c = latestCenterRef.current;
@@ -334,7 +334,7 @@ const GoogleMapBackground = forwardRef<MapHandle, Props>(
       } else if (!showRoute) {
         map.setCenter(pos);
       }
-    }, [mapReady, userLocation.lat, userLocation.lng, followUser, showRoute]);
+    }, [mapReady, userLocation, followUser, showRoute]);
 
     // Rotate map with device heading when driving (mobile GPS + compass).
     useEffect(() => {
@@ -467,9 +467,7 @@ const GoogleMapBackground = forwardRef<MapHandle, Props>(
     }, [
       mapReady,
       showRoute,
-      selectedStation?.id,
-      selectedStation?.lat,
-      selectedStation?.lng,
+      selectedStation,
       routeRequestOriginLat,
       routeRequestOriginLng,
       clearRoute,
