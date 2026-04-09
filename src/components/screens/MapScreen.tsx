@@ -7,6 +7,7 @@ import {
   List,
   RefreshCw,
   Navigation,
+  LocateFixed,
   Search,
   X,
   ChevronUp,
@@ -31,6 +32,7 @@ import {
   selectRouteIndexForSearchPreference,
 } from "../../lib/stationFilters";
 import { devLog } from "../../lib/logger";
+import { stripHtml } from "../../lib/stripHtml";
 
 import type { Station } from "../../types/station";
 import type { UserPreferences } from "../../lib/preferences";
@@ -100,8 +102,44 @@ function getGreeting() {
 /** Dublin city centre — used when geolocation is denied or unavailable. */
 const FALLBACK_LOCATION = { lat: 53.3498, lng: -6.2603 };
 
+/** Throttle live GPS updates for the map (ms) when browsing stations. */
+const LIVE_GPS_MIN_INTERVAL_MS = 1600;
+/** Faster updates while a route is active so the dot and turn prompts stay usable while driving. */
+const LIVE_NAV_GPS_MIN_INTERVAL_MS = 900;
+/** Advance to the next Directions step when within this distance of the step end (meters). */
+const STEP_COMPLETE_THRESHOLD_M = 52;
+/** Refresh station lists while following only after moving this far (km) or after the time below. */
+const STATION_ANCHOR_MIN_MOVE_KM = 0.25;
+const STATION_ANCHOR_MIN_INTERVAL_MS = 40_000;
+
 /** Matches polyline colours in `GoogleMapBackground` for route options UI. */
 const ROUTE_OPTION_COLORS = ["#00E0C6", "#3B82F6", "#F59E0B"] as const;
+
+function formatNavDistanceMeters(m: number): string {
+  if (!Number.isFinite(m) || m < 0) return "—";
+  if (m >= 1000) return `${(m / 1000).toFixed(1)} km`;
+  return `${Math.round(m)} m`;
+}
+
+/** Maneuver icon for next-turn banner (matches DirectionsPanel). */
+function maneuverIcon(maneuver?: string): string {
+  if (!maneuver) return "→";
+  const icons: Record<string, string> = {
+    "turn-left": "↰",
+    "turn-right": "↱",
+    "turn-slight-left": "↖",
+    "turn-slight-right": "↗",
+    "turn-sharp-left": "⤺",
+    "turn-sharp-right": "⤻",
+    "uturn-left": "↶",
+    "uturn-right": "↷",
+    merge: "⛙",
+    "roundabout-left": "⭯",
+    "roundabout-right": "⭮",
+    straight: "↑",
+  };
+  return icons[maneuver] || "→";
+}
 
 export default function MapScreen({
   prefs,
@@ -156,26 +194,143 @@ export default function MapScreen({
   const greeting = useMemo(() => getGreeting(), []);
   const name = (user?.user_metadata?.full_name as string | undefined) ?? user?.email ?? "there";
 
-  // Geolocation
+  // Geolocation — `userLocation` is the anchor for station APIs; `livePosition` updates while "Follow me" is on.
   const [userLocation, setUserLocation] = useState(FALLBACK_LOCATION);
+  const [livePosition, setLivePosition] = useState(FALLBACK_LOCATION);
+  const [followMe, setFollowMe] = useState(false);
+  const [directionsOrigin, setDirectionsOrigin] = useState<{ lat: number; lng: number } | null>(
+    null
+  );
+  /** Compass heading from GPS (degrees), when the device reports it — rotates the map in follow mode. */
+  const [liveHeading, setLiveHeading] = useState<number | null>(null);
+  /** Which step along the active route we are navigating (0-based). */
+  const [navStepIndex, setNavStepIndex] = useState(0);
   const [locationLoading, setLocationLoading] = useState(true);
   const [locationError, setLocationError] = useState(false);
+
+  const lastGpsPushRef = useRef(0);
+  const stationAnchorSyncRef = useRef({
+    t: 0,
+    lat: FALLBACK_LOCATION.lat,
+    lng: FALLBACK_LOCATION.lng,
+  });
+  const prevFollowMeRef = useRef(false);
+
+  const mapDisplayPosition = followMe ? livePosition : userLocation;
+
+  const geoBaseOptions = useMemo(
+    () => ({
+      enableHighAccuracy: prefs.locationHighAccuracy,
+      timeout: 25_000 as const,
+    }),
+    [prefs.locationHighAccuracy]
+  );
+
+  useEffect(() => {
+    if (!prefs.locationLiveUpdates && followMe) {
+      setFollowMe(false);
+    }
+  }, [prefs.locationLiveUpdates, followMe]);
 
   useEffect(() => {
     setLocationLoading(true);
     navigator.geolocation?.getCurrentPosition(
       (pos) => {
-        setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        const next = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        setUserLocation(next);
+        setLivePosition(next);
+        const h = pos.coords.heading;
+        setLiveHeading(h != null && !Number.isNaN(h) ? h : null);
         setLocationLoading(false);
         setLocationError(false);
       },
       () => {
         setUserLocation(FALLBACK_LOCATION);
+        setLivePosition(FALLBACK_LOCATION);
+        setLiveHeading(null);
         setLocationLoading(false);
         setLocationError(true);
-      }
+      },
+      { ...geoBaseOptions, maximumAge: 15_000 }
     );
-  }, []);
+  }, [geoBaseOptions]);
+
+  useEffect(() => {
+    if (!followMe || !navigator.geolocation || !prefs.locationLiveUpdates) return;
+
+    const minMs = showRoute ? LIVE_NAV_GPS_MIN_INTERVAL_MS : LIVE_GPS_MIN_INTERVAL_MS;
+    const maxAge = showRoute ? 1000 : 2000;
+
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        const now = Date.now();
+        if (now - lastGpsPushRef.current < minMs) return;
+        lastGpsPushRef.current = now;
+        setLivePosition({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+        });
+        const h = pos.coords.heading;
+        setLiveHeading(h != null && !Number.isNaN(h) ? h : null);
+      },
+      (err) => {
+        devLog("Geolocation watch error", err?.message ?? err);
+      },
+      { ...geoBaseOptions, maximumAge: maxAge }
+    );
+
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, [followMe, showRoute, prefs.locationLiveUpdates, geoBaseOptions]);
+
+  useEffect(() => {
+    if (followMe && !prevFollowMeRef.current) {
+      stationAnchorSyncRef.current = {
+        t: Date.now(),
+        lat: userLocation.lat,
+        lng: userLocation.lng,
+      };
+    }
+    prevFollowMeRef.current = followMe;
+  }, [followMe, userLocation.lat, userLocation.lng]);
+
+  useEffect(() => {
+    if (!followMe) return;
+    const ref = stationAnchorSyncRef.current;
+    const km = calculateDistanceKm(ref.lat, ref.lng, livePosition.lat, livePosition.lng);
+    const elapsed = Date.now() - ref.t;
+    if (elapsed < STATION_ANCHOR_MIN_INTERVAL_MS && km < STATION_ANCHOR_MIN_MOVE_KM) return;
+    stationAnchorSyncRef.current = {
+      t: Date.now(),
+      lat: livePosition.lat,
+      lng: livePosition.lng,
+    };
+    setUserLocation({ lat: livePosition.lat, lng: livePosition.lng });
+  }, [followMe, livePosition.lat, livePosition.lng]);
+
+  /** New destination or route alternative → restart turn-by-turn from step 0. */
+  useEffect(() => {
+    if (!showRoute) return;
+    setNavStepIndex(0);
+  }, [showRoute, selectedStationForRoute?.id, selectedRouteIndex]);
+
+  /** Advance the current step when GPS shows you’ve reached the end of this leg (straight-line, like basic satnav). */
+  useEffect(() => {
+    if (!showRoute || !routeInfo?.steps?.length) return;
+    setNavStepIndex((idx) => {
+      const steps = routeInfo.steps;
+      const end = steps[idx]?.end_location;
+      if (!end) return idx;
+      const distM =
+        calculateDistanceKm(
+          mapDisplayPosition.lat,
+          mapDisplayPosition.lng,
+          end.lat(),
+          end.lng()
+        ) * 1000;
+      if (distM < STEP_COMPLETE_THRESHOLD_M && idx < steps.length - 1) return idx + 1;
+      return idx;
+    });
+  }, [mapDisplayPosition.lat, mapDisplayPosition.lng, showRoute, routeInfo]);
 
   // Data fetching
   const [evStations, setEvStations] = useState<Station[]>([]);
@@ -311,25 +466,53 @@ export default function MapScreen({
     setLocationLoading(true);
     navigator.geolocation?.getCurrentPosition(
       (pos) => {
-        setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        const next = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        setUserLocation(next);
+        setLivePosition(next);
+        const h = pos.coords.heading;
+        setLiveHeading(h != null && !Number.isNaN(h) ? h : null);
         setLocationLoading(false);
         setLocationError(false);
       },
       () => {
         setUserLocation(FALLBACK_LOCATION);
+        setLivePosition(FALLBACK_LOCATION);
+        setLiveHeading(null);
         setLocationLoading(false);
         setLocationError(true);
-      }
+      },
+      { ...geoBaseOptions, maximumAge: 0 }
     );
   };
+
+  const handleToggleFollowMe = useCallback(() => {
+    if (!prefs.locationLiveUpdates) return;
+    setFollowMe((wasOn) => {
+      if (!wasOn) {
+        setLivePosition({ lat: userLocation.lat, lng: userLocation.lng });
+        lastGpsPushRef.current = 0;
+      }
+      return !wasOn;
+    });
+  }, [userLocation, prefs.locationLiveUpdates]);
 
   const handleRecenter = () => {
     mapRef.current?.recenter();
     handleRefresh();
   };
 
-  // Route handlers
+  // Route handlers — optionally auto-follow (Settings → Location).
   const handleStationSelectForRoute = (station: Station) => {
+    const origin = { ...mapDisplayPosition };
+    setDirectionsOrigin(origin);
+    setLivePosition({ lat: origin.lat, lng: origin.lng });
+    lastGpsPushRef.current = 0;
+    if (prefs.locationAutoFollowOnRoute && prefs.locationLiveUpdates) {
+      setFollowMe(true);
+    } else {
+      setFollowMe(false);
+    }
+    setNavStepIndex(0);
     setSelectedStationForRoute(station);
     setShowRoute(true);
     setShowDirectionsPanel(false);
@@ -344,8 +527,10 @@ export default function MapScreen({
   const handleClearRoute = () => {
     setShowRoute(false);
     setSelectedStationForRoute(null);
+    setDirectionsOrigin(null);
     setRouteInfos([]);
     setSelectedRouteIndex(0);
+    setNavStepIndex(0);
     setShowDirectionsPanel(false);
     mapRef.current?.clearRoute();
   };
@@ -395,13 +580,25 @@ export default function MapScreen({
     }
   };
 
+  const currentNavStep = showRoute && routeInfo ? routeInfo.steps[navStepIndex] : undefined;
+  const nextNavStep = showRoute && routeInfo ? routeInfo.steps[navStepIndex + 1] : undefined;
+  const distToCurrentStepEndM =
+    currentNavStep?.end_location != null
+      ? calculateDistanceKm(
+          mapDisplayPosition.lat,
+          mapDisplayPosition.lng,
+          currentNavStep.end_location.lat(),
+          currentNavStep.end_location.lng()
+        ) * 1000
+      : null;
+
   return (
-    <div className="absolute inset-0">
+    <div className="absolute inset-0 min-h-0 flex flex-col">
       {/* Map */}
-      <div className="absolute inset-0">
+      <div className="absolute inset-0 min-h-0">
         <GoogleMapBackground
           ref={mapRef}
-          userLocation={userLocation}
+          userLocation={mapDisplayPosition}
           markers={rankedStations}
           zoom={13}
           onPinSelect={handleStationSelectForRoute}
@@ -410,6 +607,9 @@ export default function MapScreen({
           showTraffic={showTraffic}
           selectedRouteIndex={selectedRouteIndex}
           onRoutesCalculated={handleRoutesCalculated}
+          directionsOrigin={directionsOrigin}
+          followUser={followMe}
+          userHeading={followMe ? liveHeading : null}
         />
       </div>
 
@@ -438,9 +638,7 @@ export default function MapScreen({
                 {greeting}, {name.split(' ')[0]}
               </p>
               {locationError && (
-                <p className="text-orange-400 text-[10px] mt-0.5">
-                  Default location
-                </p>
+                <p className="text-orange-400 text-[10px] mt-0.5">Default location</p>
               )}
             </div>
 
@@ -616,6 +814,40 @@ export default function MapScreen({
               </div>
             </div>
 
+            {/* Live turn-by-turn: step advances from GPS */}
+            {routeInfo.steps.length > 0 && currentNavStep && (
+              <div className="px-4 py-3 border-b border-[#00E0C6]/25 bg-gradient-to-br from-[#00E0C6]/12 to-transparent">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-[#00E0C6]/90 mb-2">
+                  {followMe ? "Live navigation" : "Next turn"}
+                </p>
+                <div className="flex gap-3 items-start">
+                  <span className="text-3xl leading-none mt-0.5" aria-hidden>
+                    {maneuverIcon(currentNavStep.maneuver)}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-white text-[15px] font-semibold leading-snug">
+                      {stripHtml(currentNavStep.instructions)}
+                    </p>
+                    {distToCurrentStepEndM != null && (
+                      <p className="text-[#00E0C6]/90 text-sm font-medium mt-1.5 tabular-nums">
+                        {formatNavDistanceMeters(distToCurrentStepEndM)} along this step
+                      </p>
+                    )}
+                  </div>
+                </div>
+                {nextNavStep && (
+                  <p className="text-white/45 text-xs mt-3 pl-10 border-t border-white/5 pt-2">
+                    Then: {stripHtml(nextNavStep.instructions)}
+                  </p>
+                )}
+                {!followMe && (
+                  <p className="text-[10px] text-amber-400/90 mt-2">
+                    Tap the crosshair button on the map to follow your live GPS while driving.
+                  </p>
+                )}
+              </div>
+            )}
+
             {/* Route Stats */}
             <div className="px-4 py-3 grid grid-cols-2 gap-3">
               {/* Distance */}
@@ -732,6 +964,34 @@ export default function MapScreen({
           bottom: "max(10rem, calc(env(safe-area-inset-bottom, 0px) + 9rem))",
         }}
       >
+        <button
+          type="button"
+          onClick={handleToggleFollowMe}
+          disabled={!prefs.locationLiveUpdates}
+          title={
+            prefs.locationLiveUpdates
+              ? undefined
+              : "Turn on “Live location updates” in Settings to use follow mode"
+          }
+          className={`
+            w-12 h-12 shrink-0 rounded-full pointer-events-auto
+            backdrop-blur-md border transition shadow-lg
+            flex items-center justify-center
+            disabled:opacity-40 disabled:cursor-not-allowed
+            ${
+              followMe
+                ? "bg-[#00E0C6]/25 border-[#00E0C6]/50"
+                : "bg-[#0D0F14]/90 border-white/10"
+            }
+          `}
+          aria-pressed={followMe}
+          aria-label={followMe ? "Stop following my location" : "Follow my location while driving"}
+        >
+          <LocateFixed
+            className={`w-5 h-5 ${followMe ? "text-[#00E0C6]" : "text-white/90"}`}
+          />
+        </button>
+
         <button
           type="button"
           onClick={handleToggleTraffic}

@@ -32,6 +32,13 @@ export type UserPreferences = {
 
   // 0..1 slider used to bias price vs. convenience.
   priceSensitivity: number; // 0..1 (you can later apply this as a filter)
+
+  /** When true, request GPS-level fixes (best real-world position; uses a bit more battery). */
+  locationHighAccuracy: boolean;
+  /** When true, allow continuous position updates while the map uses follow mode / driving. */
+  locationLiveUpdates: boolean;
+  /** When true, automatically turn on map follow when you start navigation to a station. */
+  locationAutoFollowOnRoute: boolean;
 };
 
 // Defaults used on first load and as a safe fallback.
@@ -42,6 +49,9 @@ export const DEFAULT_PREFS: UserPreferences = {
   preference: "nearest",
   maxDistanceKm: 30,
   priceSensitivity: 0.5,
+  locationHighAccuracy: true,
+  locationLiveUpdates: true,
+  locationAutoFollowOnRoute: true,
 };
 
 // Storage key in localStorage (bump version when schema changes).
@@ -63,6 +73,11 @@ export function loadPrefs(): UserPreferences {
         ...DEFAULT_PREFS.connectors,
         ...(parsed.connectors ?? {}),
       },
+      // Booleans: older saved prefs may omit these keys.
+      locationHighAccuracy: parsed.locationHighAccuracy ?? DEFAULT_PREFS.locationHighAccuracy,
+      locationLiveUpdates: parsed.locationLiveUpdates ?? DEFAULT_PREFS.locationLiveUpdates,
+      locationAutoFollowOnRoute:
+        parsed.locationAutoFollowOnRoute ?? DEFAULT_PREFS.locationAutoFollowOnRoute,
     };
   } catch {
     // If JSON parse fails or localStorage is unavailable, fall back safely.

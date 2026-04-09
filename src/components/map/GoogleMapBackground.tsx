@@ -39,6 +39,7 @@ export interface RouteInfo {
 }
 
 interface Props {
+  /** Blue dot position and, when not following, map center target. */
   userLocation: { lat: number; lng: number };
   markers: Station[];
   zoom?: number;
@@ -50,6 +51,12 @@ interface Props {
   selectedRouteIndex?: number;
   /** Called once per successful directions request with one entry per returned route. */
   onRoutesCalculated?: (routes: RouteInfo[]) => void;
+  /** When set, directions use this origin so live GPS updates do not refetch the route. */
+  directionsOrigin?: { lat: number; lng: number } | null;
+  /** If true, camera follows `userLocation` with panTo instead of setCenter-only jumps. */
+  followUser?: boolean;
+  /** Device compass heading (degrees, 0–360) when available — rotates the map while following. */
+  userHeading?: number | null;
 }
 
 export interface MapHandle {
@@ -65,9 +72,13 @@ function loadGoogleMaps(): Promise<void> {
   }
 
   if (!googleMapsPromise) {
-    googleMapsPromise = new Promise((resolve, reject) => {
+    const p = new Promise<void>((resolve, reject) => {
       if (!GOOGLE_MAPS_KEY) {
-        reject(new Error("Google Maps API key not found"));
+        reject(
+          new Error(
+            "Missing VITE_GOOGLE_MAPS_API_KEY — add it to .env.local and restart the dev server."
+          )
+        );
         return;
       }
 
@@ -77,13 +88,22 @@ function loadGoogleMaps(): Promise<void> {
       script.defer = true;
 
       script.onload = () => resolve();
-      script.onerror = (error) => reject(error);
+      script.onerror = () =>
+        reject(new Error("Could not load Google Maps (check network and API key restrictions)."));
 
       document.head.appendChild(script);
+    });
+    googleMapsPromise = p.catch((err: Error) => {
+      googleMapsPromise = null;
+      throw err;
     });
   }
 
   return googleMapsPromise;
+}
+
+function triggerMapResize(map: google.maps.Map) {
+  google.maps.event.trigger(map, "resize");
 }
 
 function legToRouteInfo(leg: google.maps.DirectionsLeg): RouteInfo {
@@ -108,11 +128,15 @@ const GoogleMapBackground = forwardRef<MapHandle, Props>(
       showTraffic = false,
       selectedRouteIndex = 0,
       onRoutesCalculated,
+      directionsOrigin = null,
+      followUser = false,
+      userHeading = null,
     },
     ref
   ) => {
     const mapRef = useRef<HTMLDivElement | null>(null);
     const mapInstance = useRef<google.maps.Map | null>(null);
+    const latestCenterRef = useRef(userLocation);
     const markerRefs = useRef<google.maps.Marker[]>([]);
     const userMarkerRef = useRef<google.maps.Marker | null>(null);
     const directionsService = useRef<google.maps.DirectionsService | null>(null);
@@ -121,6 +145,7 @@ const GoogleMapBackground = forwardRef<MapHandle, Props>(
     const prevSelectedRouteIndexRef = useRef<number | null>(null);
     const trafficLayer = useRef<google.maps.TrafficLayer | null>(null);
     const [mapReady, setMapReady] = useState(false);
+    const [mapLoadError, setMapLoadError] = useState<string | null>(null);
     const onRoutesCalculatedRef = useRef(onRoutesCalculated);
     const selectedRouteIndexRef = useRef(selectedRouteIndex);
 
@@ -131,6 +156,13 @@ const GoogleMapBackground = forwardRef<MapHandle, Props>(
     useLayoutEffect(() => {
       selectedRouteIndexRef.current = selectedRouteIndex;
     }, [selectedRouteIndex]);
+
+    useLayoutEffect(() => {
+      latestCenterRef.current = userLocation;
+    }, [userLocation]);
+
+    const routeRequestOriginLat = directionsOrigin?.lat ?? userLocation.lat;
+    const routeRequestOriginLng = directionsOrigin?.lng ?? userLocation.lng;
 
     const clearRoute = useCallback(() => {
       directionsRenderers.current.forEach((renderer) => renderer.setMap(null));
@@ -194,64 +226,137 @@ const GoogleMapBackground = forwardRef<MapHandle, Props>(
       []
     );
 
-    useImperativeHandle(ref, () => ({
-      recenter: () => {
-        if (mapInstance.current) {
-          mapInstance.current.panTo(userLocation);
-          mapInstance.current.setZoom(zoom);
-        }
-      },
-      clearRoute,
-    }));
+    useImperativeHandle(
+      ref,
+      () => ({
+        recenter: () => {
+          if (mapInstance.current) {
+            mapInstance.current.panTo(latestCenterRef.current);
+            mapInstance.current.setZoom(zoom);
+          }
+        },
+        clearRoute,
+      }),
+      [zoom, clearRoute]
+    );
 
-    // Map + markers
+    // Create map once (center picks up latest GPS via ref when script finishes loading).
     useEffect(() => {
+      let cancelled = false;
+      setMapLoadError(null);
+
+      loadGoogleMaps()
+        .then(() => {
+          if (cancelled || !mapRef.current) return;
+
+          if (!mapInstance.current) {
+            const c = latestCenterRef.current;
+            mapInstance.current = new google.maps.Map(mapRef.current, {
+              center: c,
+              zoom,
+              disableDefaultUI: true,
+              styles: DARK_MAP_STYLE,
+              zoomControl: false,
+              mapTypeControl: false,
+              scaleControl: false,
+              streetViewControl: false,
+              rotateControl: false,
+              fullscreenControl: false,
+            });
+
+            directionsService.current = new google.maps.DirectionsService();
+            trafficLayer.current = new google.maps.TrafficLayer();
+            setMapReady(true);
+
+            const kickResize = () => {
+              if (!mapInstance.current) return;
+              triggerMapResize(mapInstance.current);
+              mapInstance.current.setCenter(latestCenterRef.current);
+            };
+            requestAnimationFrame(() => requestAnimationFrame(kickResize));
+          }
+        })
+        .catch((err: Error) => {
+          if (!cancelled) {
+            console.error(err);
+            setMapLoadError(err.message || "Map failed to load");
+          }
+        });
+
+      return () => {
+        cancelled = true;
+      };
+    }, [zoom]);
+
+    // Lazy routes / flex layout can size the container after the first paint — tiles stay blank until `resize`.
+    useEffect(() => {
+      if (!mapReady || !mapRef.current || !mapInstance.current) return;
+
+      const map = mapInstance.current;
+      const el = mapRef.current;
+
+      const ro = new ResizeObserver(() => {
+        triggerMapResize(map);
+      });
+      ro.observe(el);
+
+      return () => ro.disconnect();
+    }, [mapReady]);
+
+    // User marker + camera (high-frequency safe: does not rebuild station markers).
+    useEffect(() => {
+      if (!mapReady || !mapInstance.current) return;
+
+      const map = mapInstance.current;
+      const pos = userLocation;
+
+      if (userMarkerRef.current) {
+        userMarkerRef.current.setPosition(pos);
+      } else {
+        userMarkerRef.current = new google.maps.Marker({
+          position: pos,
+          map,
+          icon: {
+            path: google.maps.SymbolPath.CIRCLE,
+            scale: 12,
+            fillColor: "#00E0C6",
+            fillOpacity: 1,
+            strokeColor: "#ffffff",
+            strokeWeight: 3,
+          },
+          zIndex: 1000,
+          title: "Your Location",
+        });
+      }
+
+      if (followUser) {
+        map.panTo(pos);
+      } else if (!showRoute) {
+        map.setCenter(pos);
+      }
+    }, [mapReady, userLocation.lat, userLocation.lng, followUser, showRoute]);
+
+    // Rotate map with device heading when driving (mobile GPS + compass).
+    useEffect(() => {
+      if (!mapReady || !mapInstance.current) return;
+      const map = mapInstance.current;
+      if (followUser && userHeading != null && Number.isFinite(userHeading)) {
+        map.setHeading(userHeading);
+      } else {
+        map.setHeading(0);
+      }
+    }, [mapReady, followUser, userHeading]);
+
+    // Station pins only — avoids recreating markers on every GPS tick while following.
+    useEffect(() => {
+      if (!mapReady || !mapInstance.current) return;
+
       let cancelled = false;
 
       loadGoogleMaps().then(() => {
-        if (cancelled || !mapRef.current) return;
-
-        if (!mapInstance.current) {
-          mapInstance.current = new google.maps.Map(mapRef.current, {
-            center: userLocation,
-            zoom,
-            disableDefaultUI: true,
-            styles: DARK_MAP_STYLE,
-            zoomControl: false,
-            mapTypeControl: false,
-            scaleControl: false,
-            streetViewControl: false,
-            rotateControl: false,
-            fullscreenControl: false,
-          });
-
-          directionsService.current = new google.maps.DirectionsService();
-          trafficLayer.current = new google.maps.TrafficLayer();
-          setMapReady(true);
-        }
+        if (cancelled || !mapInstance.current) return;
 
         const map = mapInstance.current;
-        map.setCenter(userLocation);
-
-        if (userMarkerRef.current) {
-          userMarkerRef.current.setPosition(userLocation);
-        } else {
-          userMarkerRef.current = new google.maps.Marker({
-            position: userLocation,
-            map,
-            icon: {
-              path: google.maps.SymbolPath.CIRCLE,
-              scale: 12,
-              fillColor: "#00E0C6",
-              fillOpacity: 1,
-              strokeColor: "#ffffff",
-              strokeWeight: 3,
-            },
-            zIndex: 1000,
-            title: "Your Location",
-          });
-        }
-
         markerRefs.current.forEach((m) => m.setMap(null));
         markerRefs.current = [];
 
@@ -286,7 +391,7 @@ const GoogleMapBackground = forwardRef<MapHandle, Props>(
       return () => {
         cancelled = true;
       };
-    }, [userLocation, markers, zoom, onPinSelect, selectedStation?.id]);
+    }, [mapReady, markers, onPinSelect, selectedStation?.id]);
 
     // One directions request with alternatives; draw all polylines; parent picks active route for turn-by-turn.
     // deps use station id/lat/lng primitives so parent object identity changes do not refetch routes.
@@ -305,7 +410,7 @@ const GoogleMapBackground = forwardRef<MapHandle, Props>(
       }
 
       const map = mapInstance.current;
-      const origin = new google.maps.LatLng(userLocation.lat, userLocation.lng);
+      const origin = new google.maps.LatLng(routeRequestOriginLat, routeRequestOriginLng);
       const destination = new google.maps.LatLng(selectedStation.lat, selectedStation.lng);
 
       directionsService.current.route(
@@ -362,9 +467,11 @@ const GoogleMapBackground = forwardRef<MapHandle, Props>(
     }, [
       mapReady,
       showRoute,
-      selectedStation,
-      userLocation.lat,
-      userLocation.lng,
+      selectedStation?.id,
+      selectedStation?.lat,
+      selectedStation?.lng,
+      routeRequestOriginLat,
+      routeRequestOriginLng,
       clearRoute,
     ]);
 
@@ -391,8 +498,17 @@ const GoogleMapBackground = forwardRef<MapHandle, Props>(
     }, [showTraffic]);
 
     return (
-      <div className="w-full h-full">
-        <div ref={mapRef} className="w-full h-full" />
+      <div className="relative w-full h-full min-h-0">
+        <div ref={mapRef} className="w-full h-full min-h-[12rem]" />
+        {mapLoadError && (
+          <div
+            className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-[#0D0F14] px-4 text-center"
+            role="alert"
+          >
+            <p className="text-sm font-medium text-white/90">Map could not load</p>
+            <p className="text-xs text-white/55 max-w-[280px]">{mapLoadError}</p>
+          </div>
+        )}
       </div>
     );
   }

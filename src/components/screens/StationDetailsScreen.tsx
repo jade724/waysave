@@ -38,6 +38,10 @@ function timeAgo(date: string): string {
 
 const UPDATE_COOLDOWN_MINUTES = 15;
 
+/** Matches `BottomNav`: fixed `bottom-6` + `h-[78px]` + home indicator / thumb space. */
+const BOTTOM_NAV_RESERVE =
+  "pb-[calc(78px+1.5rem+env(safe-area-inset-bottom,0px)+1rem)]";
+
 function minutesSince(date: string): number {
   return (Date.now() - new Date(date).getTime()) / 60000;
 }
@@ -245,7 +249,9 @@ export default function StationDetailsScreen({
       };
 
   return (
-    <div className="w-full min-h-full bg-[#0D0F14] pb-28">
+    <div
+      className={`flex flex-1 flex-col min-h-0 w-full overflow-y-auto overscroll-y-contain bg-[#0D0F14] ${BOTTOM_NAV_RESERVE}`}
+    >
       {/* Top bar */}
       <div className="sticky top-0 z-20 px-4 pt-3 pb-3 bg-[#0D0F14]/85 backdrop-blur-lg border-b border-white/[0.06]">
         <div className="flex items-center justify-between max-w-lg mx-auto">
@@ -287,7 +293,7 @@ export default function StationDetailsScreen({
         </div>
       </div>
 
-      <div className="px-5 pt-2 pb-8 max-w-lg mx-auto space-y-5">
+      <div className="px-5 pt-2 pb-4 max-w-lg mx-auto space-y-5">
         {/* Hero */}
         <div
           className={`relative overflow-hidden rounded-3xl border border-white/[0.08] bg-gradient-to-b ${accent.hero} p-5 shadow-[0_20px_50px_-24px_rgba(0,0,0,0.8)]`}

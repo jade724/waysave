@@ -124,7 +124,8 @@ export default function App() {
       <PwaUpdateNotifier />
       <div
         className={`
-          w-full h-full transition-opacity duration-150
+          w-full flex-1 min-h-0 flex flex-col relative
+          transition-opacity duration-150
           ${transitioning ? "opacity-0" : "opacity-100"}
         `}
       >

@@ -2,18 +2,12 @@
 
 import { Navigation, X, MapPin, Clock } from "lucide-react";
 import type { RouteInfo } from "./GoogleMapBackground";
+import { stripHtml } from "../../lib/stripHtml";
 
 interface Props {
   routeInfo: RouteInfo | null;
   stationName: string;
   onClose: () => void;
-}
-
-// Strip HTML from Google's instructions
-function stripHtml(html: string): string {
-  const tmp = document.createElement("DIV");
-  tmp.innerHTML = html;
-  return tmp.textContent || tmp.innerText || "";
 }
 
 // Get direction icon based on maneuver type
