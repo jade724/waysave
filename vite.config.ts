@@ -3,6 +3,16 @@ import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 
 export default defineConfig({
+  server: {
+    // `npm run dev` (Vite only): forward API proxies to Netlify dev server on 8888.
+    // Run `npm run dev:netlify` OR start functions separately so :8888 is listening.
+    proxy: {
+      "/.netlify/functions": {
+        target: "http://127.0.0.1:8888",
+        changeOrigin: true,
+      },
+    },
+  },
   plugins: [
     react(),
     VitePWA({

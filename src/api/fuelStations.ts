@@ -42,10 +42,10 @@ export async function loadFuelStations(
     
     // ✅ FIX: Add type assertion to ensure we get the expected structure
     const googlePlaces = await fetchFuelStationsFromGoogle(
-      userLat, 
-      userLng, 
-      cappedRadiusMeters, 
-      60
+      userLat,
+      userLng,
+      cappedRadiusMeters,
+      80
     );
     
     if (googlePlaces.length > 0) {
@@ -136,11 +136,18 @@ function getHardcodedIrishStations(
       )
     : HARDCODED_STATIONS;
 
-  let stations: Station[] = filtered.map((station) => ({
-    ...station,
-    price_label: `€${station.price_value.toFixed(2)}/L`,
-    distance_km: calculateDistanceKm(userLat, userLng, station.lat, station.lng),
-  }));
+  let stations: Station[] = filtered.map((station) => {
+    const petrol = station.price_value;
+    const diesel =
+      Math.round((station.price_value + 0.092) * 1000) / 1000;
+    return {
+      ...station,
+      fuelPrices: { petrol, diesel },
+      price_value: Math.min(petrol, diesel),
+      price_label: `€${petrol.toFixed(2)} / €${diesel.toFixed(2)}`,
+      distance_km: calculateDistanceKm(userLat, userLng, station.lat, station.lng),
+    };
+  });
 
   if (maxDistanceKm != null && maxDistanceKm > 0) {
     stations = stations.filter(

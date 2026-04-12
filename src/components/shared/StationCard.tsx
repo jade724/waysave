@@ -1,5 +1,7 @@
 import { ChevronRight, Fuel, MapPin, Sparkles, Zap } from "lucide-react";
 import type { Station } from "../../types/station";
+import { formatTimeAgo } from "../../lib/formatTimeAgo";
+import { effectiveFuelPriceEurPerL } from "../../lib/fuelPrices";
 import type { UserPreferences } from "../../lib/preferences";
 
 interface Props {
@@ -17,6 +19,11 @@ export default function StationCard({
 }: Props) {
   const isEV = station.type === "ev";
   const isBestValue = index === 0 && prefs.preference === "cheapest";
+  const fp = station.fuelPrices;
+  const listPrice =
+    !isEV && station.type === "fuel"
+      ? effectiveFuelPriceEurPerL(station, prefs.fuelType)
+      : null;
   const accent = isEV
     ? { ring: "ring-emerald-500/25", iconBg: "bg-emerald-500/12", iconText: "text-emerald-400", bar: "from-emerald-500/80" }
     : { ring: "ring-cyan-500/20", iconBg: "bg-cyan-500/12", iconText: "text-cyan-400", bar: "from-cyan-500/80" };
@@ -86,9 +93,24 @@ export default function StationCard({
               <MapPin className="w-3.5 h-3.5 text-white/35" aria-hidden />
               {station.distance_km != null ? `${station.distance_km.toFixed(1)} km` : "—"}
             </span>
-            {isEV && (
+            {isEV && station.evMaxPowerKw != null && station.evMaxPowerKw > 0 && (
+              <span className="rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-emerald-300/95">
+                ≤ {Math.round(station.evMaxPowerKw)} kW
+              </span>
+            )}
+            {isEV && (station.evMaxPowerKw == null || station.evMaxPowerKw <= 0) && (
               <span className="rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-400/95">
                 EV
+              </span>
+            )}
+            {!isEV && station.isOpen === true && (
+              <span className="rounded-md bg-emerald-500/8 px-1.5 py-0.5 text-[10px] font-medium text-emerald-400/90">
+                Open
+              </span>
+            )}
+            {!isEV && station.isOpen === false && (
+              <span className="rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[10px] font-medium text-white/35">
+                Closed?
               </span>
             )}
             {isBestValue && (
@@ -100,12 +122,35 @@ export default function StationCard({
           </div>
         </div>
 
-        {/* Price */}
-        <div className="shrink-0 flex flex-col items-end justify-center gap-0.5 min-w-[4.25rem]">
-          {!isEV && station.price_value != null && (
+        {/* Price — petrol & diesel may differ */}
+        <div className="shrink-0 flex flex-col items-end justify-center gap-0.5 min-w-[4.5rem]">
+          {!isEV && fp?.petrol != null && fp?.diesel != null && (
+            <>
+              <div className="text-right leading-tight">
+                <p className="text-[10px] text-white/40 font-medium uppercase tracking-wide">
+                  P / D
+                </p>
+                <p className="text-base font-bold tabular-nums text-[#5eead4]">
+                  €{fp.petrol.toFixed(2)} · €{fp.diesel.toFixed(2)}
+                </p>
+              </div>
+              <p className="text-[10px] text-white/35 font-medium">per litre</p>
+              {station.priceSource === "community" && (
+                <span className="mt-0.5 text-[9px] font-semibold uppercase tracking-wide text-[#00E0C6]/80">
+                  Community
+                </span>
+              )}
+              {station.priceSource === "community" && station.communityPriceUpdatedAt && (
+                <span className="text-[9px] text-white/30 tabular-nums">
+                  {formatTimeAgo(station.communityPriceUpdatedAt)}
+                </span>
+              )}
+            </>
+          )}
+          {!isEV && (fp?.petrol == null || fp?.diesel == null) && listPrice != null && (
             <>
               <p className="text-lg font-bold tabular-nums text-[#5eead4] leading-none">
-                €{station.price_value.toFixed(2)}
+                €{listPrice.toFixed(2)}
               </p>
               <p className="text-[10px] text-white/35 font-medium">per litre</p>
               {station.priceSource === "community" && (
@@ -113,12 +158,28 @@ export default function StationCard({
                   Community
                 </span>
               )}
+              {station.priceSource === "community" && station.communityPriceUpdatedAt && (
+                <span className="text-[9px] text-white/30 tabular-nums">
+                  {formatTimeAgo(station.communityPriceUpdatedAt)}
+                </span>
+              )}
             </>
           )}
           {isEV && (
-            <span className="text-[11px] text-white/35 text-right leading-tight max-w-[5rem]">
-              Tap for details
-            </span>
+            <div className="text-right max-w-[6.5rem] min-w-0">
+              {station.evUsageCostHint ? (
+                <p
+                  className="text-[10px] text-emerald-300/90 leading-snug line-clamp-3"
+                  title={station.evUsageCostHint}
+                >
+                  {station.evUsageCostHint}
+                </p>
+              ) : (
+                <span className="text-[11px] text-white/35 leading-tight">
+                  Tap for power & pricing
+                </span>
+              )}
+            </div>
           )}
         </div>
       </div>

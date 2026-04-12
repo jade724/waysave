@@ -39,6 +39,12 @@ export type UserPreferences = {
   locationLiveUpdates: boolean;
   /** When true, automatically turn on map follow when you start navigation to a station. */
   locationAutoFollowOnRoute: boolean;
+
+  /** Notify when community prices change for stations in your favourites (while the app is open). */
+  priceAlertsEnabled: boolean;
+
+  /** UI language (minimal catalogue: English + Irish). */
+  locale: "en" | "ga";
 };
 
 // Defaults used on first load and as a safe fallback.
@@ -52,35 +58,53 @@ export const DEFAULT_PREFS: UserPreferences = {
   locationHighAccuracy: true,
   locationLiveUpdates: true,
   locationAutoFollowOnRoute: true,
+  priceAlertsEnabled: false,
+  locale: "en",
 };
 
 // Storage key in localStorage (bump version when schema changes).
-const KEY = "waysave_prefs_v1";
+const KEY = "waysave_prefs_v2";
+const LEGACY_KEY = "waysave_prefs_v1";
 
 // Read preferences from localStorage, with safe defaults if missing/corrupt.
+function mergePrefs(parsed: Partial<UserPreferences>): UserPreferences {
+  return {
+    ...DEFAULT_PREFS,
+    ...parsed,
+    connectors: {
+      ...DEFAULT_PREFS.connectors,
+      ...(parsed.connectors ?? {}),
+    },
+    locationHighAccuracy: parsed.locationHighAccuracy ?? DEFAULT_PREFS.locationHighAccuracy,
+    locationLiveUpdates: parsed.locationLiveUpdates ?? DEFAULT_PREFS.locationLiveUpdates,
+    locationAutoFollowOnRoute:
+      parsed.locationAutoFollowOnRoute ?? DEFAULT_PREFS.locationAutoFollowOnRoute,
+    priceAlertsEnabled: parsed.priceAlertsEnabled ?? DEFAULT_PREFS.priceAlertsEnabled,
+    locale: parsed.locale === "ga" || parsed.locale === "en" ? parsed.locale : DEFAULT_PREFS.locale,
+  };
+}
+
 export function loadPrefs(): UserPreferences {
   try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return DEFAULT_PREFS;
+    let raw = localStorage.getItem(KEY);
+    if (!raw) {
+      raw = localStorage.getItem(LEGACY_KEY);
+      if (raw) {
+        try {
+          const merged = mergePrefs(JSON.parse(raw) as Partial<UserPreferences>);
+          localStorage.setItem(KEY, JSON.stringify(merged));
+          localStorage.removeItem(LEGACY_KEY);
+          return merged;
+        } catch {
+          localStorage.removeItem(LEGACY_KEY);
+        }
+      }
+      return DEFAULT_PREFS;
+    }
 
     const parsed = JSON.parse(raw) as Partial<UserPreferences>;
-
-    // Merge safely (and ensure nested connectors exist)
-    return {
-      ...DEFAULT_PREFS,
-      ...parsed,
-      connectors: {
-        ...DEFAULT_PREFS.connectors,
-        ...(parsed.connectors ?? {}),
-      },
-      // Booleans: older saved prefs may omit these keys.
-      locationHighAccuracy: parsed.locationHighAccuracy ?? DEFAULT_PREFS.locationHighAccuracy,
-      locationLiveUpdates: parsed.locationLiveUpdates ?? DEFAULT_PREFS.locationLiveUpdates,
-      locationAutoFollowOnRoute:
-        parsed.locationAutoFollowOnRoute ?? DEFAULT_PREFS.locationAutoFollowOnRoute,
-    };
+    return mergePrefs(parsed);
   } catch {
-    // If JSON parse fails or localStorage is unavailable, fall back safely.
     return DEFAULT_PREFS;
   }
 }

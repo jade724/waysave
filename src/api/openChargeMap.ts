@@ -3,10 +3,7 @@
 
 import type { ConnectorFilters } from "../lib/preferences";
 import { devWarn } from "../lib/logger";
-
-const FUNCTIONS_BASE = import.meta.env.DEV
-  ? "http://localhost:8888/.netlify/functions"
-  : "/.netlify/functions";
+import { NETLIFY_FUNCTIONS_BASE } from "../lib/netlifyFunctionsUrl";
 
 export interface OCMStation {
   AddressInfo: {
@@ -55,7 +52,7 @@ async function fetchOCMViaProxy(
   maxresults: number
 ): Promise<OCMStation[] | null> {
   try {
-    const url = new URL(`${FUNCTIONS_BASE}/fetch-openchargemap`, window.location.origin);
+    const url = new URL(`${NETLIFY_FUNCTIONS_BASE}/fetch-openchargemap`, window.location.origin);
     url.searchParams.set("lat", String(lat));
     url.searchParams.set("lng", String(lng));
     url.searchParams.set("distance", String(distanceKM));

@@ -13,6 +13,8 @@ import {
 } from "lucide-react";
 import { useMemo } from "react";
 import { useAuth } from "../../lib/authContext";
+import { formatPrefsSummaryLine, greetingForHour } from "../../lib/i18n/helpers";
+import { useI18n } from "../../lib/i18n/i18nContext";
 import type { UserPreferences } from "../../lib/preferences";
 
 interface Props {
@@ -23,14 +25,10 @@ interface Props {
   prefs?: UserPreferences;
 }
 
-function getGreeting() {
-  const hour = new Date().getHours();
-  if (hour < 12) return "Good morning";
-  if (hour < 18) return "Good afternoon";
-  return "Good evening";
-}
-
-function displayName(user: ReturnType<typeof useAuth>["user"]) {
+function displayName(
+  user: ReturnType<typeof useAuth>["user"],
+  guestLabel: string
+) {
   const full = user?.user_metadata?.full_name as string | undefined;
   if (full?.trim()) {
     const first = full.trim().split(/\s+/)[0];
@@ -41,22 +39,7 @@ function displayName(user: ReturnType<typeof useAuth>["user"]) {
     const local = email.split("@")[0];
     return local.length > 20 ? `${local.slice(0, 18)}…` : local;
   }
-  return "there";
-}
-
-function prefsSummary(p: UserPreferences): string {
-  const tab = p.activeTab === "fuel" ? "Fuel" : "EV";
-  const dist =
-    p.maxDistanceKm > 0
-      ? `${p.maxDistanceKm < 10 ? p.maxDistanceKm.toFixed(1) : Math.round(p.maxDistanceKm)} km radius`
-      : "Any distance";
-  const sort =
-    p.preference === "nearest"
-      ? "Nearest"
-      : p.preference === "cheapest"
-        ? "Best value"
-        : "Fastest route";
-  return `${tab} · ${dist} · ${sort}`;
+  return guestLabel;
 }
 
 export default function HomeScreen({
@@ -66,10 +49,17 @@ export default function HomeScreen({
   prefs,
 }: Props) {
   const { user } = useAuth();
+  const { locale, t } = useI18n();
 
-  const greeting = useMemo(() => getGreeting(), []);
-  const name = useMemo(() => displayName(user), [user]);
-  const summaryLine = prefs ? prefsSummary(prefs) : null;
+  const greeting = useMemo(
+    () => greetingForHour(locale, new Date().getHours()),
+    [locale]
+  );
+  const name = useMemo(
+    () => displayName(user, t("home_guest_name")),
+    [user, t]
+  );
+  const summaryLine = prefs ? formatPrefsSummaryLine(prefs, locale) : null;
 
   return (
     <div className="relative w-full h-full bg-[#0D0F14] overflow-y-auto text-white pb-28">
@@ -89,7 +79,7 @@ export default function HomeScreen({
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#00E0C6]/90 mb-2">
-                WaySave
+                {t("brand_waysave")}
               </p>
               <h1 className="text-[1.65rem] font-bold tracking-tight leading-tight">
                 {greeting},
@@ -98,7 +88,7 @@ export default function HomeScreen({
                 </span>
               </h1>
               <p className="text-white/45 text-sm mt-2 max-w-[280px] leading-relaxed">
-                Compare fuel and EV stops near you—then open the map to navigate.
+                {t("home_subtitle")}
               </p>
             </div>
             <div
@@ -134,10 +124,10 @@ export default function HomeScreen({
               </div>
               <div className="min-w-0 flex-1">
                 <p className="text-[#0D0F14] font-bold text-lg leading-tight">
-                  Open map
+                  {t("open_map")}
                 </p>
                 <p className="text-[#0D0F14]/75 text-sm mt-0.5 font-medium">
-                  Stations, routes, and live traffic
+                  {t("open_map_sub")}
                 </p>
               </div>
               <ChevronRight className="h-6 w-6 shrink-0 text-[#0D0F14]/50 transition group-hover:translate-x-0.5" />
@@ -159,9 +149,11 @@ export default function HomeScreen({
               <SlidersHorizontal className="h-5 w-5 text-[#00E0C6]" />
             </div>
             <div>
-              <p className="font-semibold text-sm text-white/95">Filters</p>
+              <p className="font-semibold text-sm text-white/95">
+                {t("filters_card_title")}
+              </p>
               <p className="text-[11px] text-white/45 mt-0.5 leading-snug">
-                Distance, fuel type, EV plugs
+                {t("filters_card_sub")}
               </p>
             </div>
           </button>
@@ -175,9 +167,11 @@ export default function HomeScreen({
               <Heart className="h-5 w-5 text-amber-200/95" />
             </div>
             <div>
-              <p className="font-semibold text-sm text-white/95">Favourites</p>
+              <p className="font-semibold text-sm text-white/95">
+                {t("favourites_card_title")}
+              </p>
               <p className="text-[11px] text-white/45 mt-0.5 leading-snug">
-                Saved stations
+                {t("favourites_card_sub")}
               </p>
             </div>
           </button>
@@ -186,7 +180,7 @@ export default function HomeScreen({
         {/* Highlights — scannable rows */}
         <section className="mb-6 animate-[fadeIn_0.6s_ease-out_0.12s_both]">
           <h2 className="text-[13px] font-semibold text-white/55 uppercase tracking-wider mb-3 px-0.5">
-            What you can do
+            {t("highlights_title")}
           </h2>
           <ul className="space-y-2">
             <li>
@@ -195,9 +189,9 @@ export default function HomeScreen({
                   <Map className="h-[18px] w-[18px] text-[#0D0F14]" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="font-semibold text-sm">Live map</p>
+                  <p className="font-semibold text-sm">{t("highlight_live_map_title")}</p>
                   <p className="text-xs text-white/45 mt-0.5">
-                    Pins for fuel and chargers near you
+                    {t("highlight_live_map_sub")}
                   </p>
                 </div>
               </div>
@@ -208,9 +202,9 @@ export default function HomeScreen({
                   <TrendingDown className="h-[18px] w-[18px] text-white" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="font-semibold text-sm">Smarter ranking</p>
+                  <p className="font-semibold text-sm">{t("highlight_ranking_title")}</p>
                   <p className="text-xs text-white/45 mt-0.5">
-                    Balance price, distance, and route time
+                    {t("highlight_ranking_sub")}
                   </p>
                 </div>
               </div>
@@ -221,9 +215,9 @@ export default function HomeScreen({
                   <Zap className="h-[18px] w-[18px] text-white" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="font-semibold text-sm">EV charging</p>
+                  <p className="font-semibold text-sm">{t("highlight_ev_title")}</p>
                   <p className="text-xs text-white/45 mt-0.5">
-                    Filter by connector types you need
+                    {t("highlight_ev_sub")}
                   </p>
                 </div>
               </div>
@@ -238,11 +232,9 @@ export default function HomeScreen({
               <Lightbulb className="h-5 w-5 text-[#00E0C6]" />
             </div>
             <div>
-              <p className="text-sm font-semibold text-white/90">Tip</p>
+              <p className="text-sm font-semibold text-white/90">{t("tip_title")}</p>
               <p className="text-xs text-white/55 leading-relaxed mt-1">
-                Allow location access for accurate distances. Use{" "}
-                <span className="text-white/75 font-medium">Filters</span> to
-                set max distance and sort order before you drive.
+                {t("tip_body")}
               </p>
             </div>
           </div>

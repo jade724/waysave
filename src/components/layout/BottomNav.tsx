@@ -2,6 +2,7 @@
 
 import { Home, Map, SlidersHorizontal, User } from "lucide-react";
 import type { Screen } from "../../App";
+import { useI18n } from "../../lib/i18n/i18nContext";
 
 // Props provide the current screen and a way to navigate.
 interface Props {
@@ -10,16 +11,17 @@ interface Props {
 }
 
 export default function BottomNav({ current, onNavigate }: Props) {
-  // Each nav item maps to a screen and an icon.
+  const { t } = useI18n();
+
   const navItems = [
-    { id: "home", label: "Home", icon: <Home className="w-5 h-5" /> },
-    { id: "map", label: "Map", icon: <Map className="w-5 h-5" /> },
+    { id: "home", label: t("nav_home"), icon: <Home className="w-5 h-5" /> },
+    { id: "map", label: t("nav_map"), icon: <Map className="w-5 h-5" /> },
     {
       id: "filters",
-      label: "Filters",
+      label: t("nav_filters"),
       icon: <SlidersHorizontal className="w-5 h-5" />,
     },
-    { id: "profile", label: "Profile", icon: <User className="w-5 h-5" /> },
+    { id: "profile", label: t("nav_profile"), icon: <User className="w-5 h-5" /> },
   ] as const;
 
   // Settings is opened from Profile — highlight Profile, not Home.

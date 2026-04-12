@@ -15,26 +15,21 @@ import {
   TrendingUp,
   Star,
   ExternalLink,
+  Camera,
 } from "lucide-react";
 
 import GoogleMapBackground from "../map/GoogleMapBackground";
 import { useToast } from "../../lib/toastContext";
 import { useAuth } from "../../lib/authContext";
-import { submitStationUpdate } from "../../api/stationUpdates";
+import { submitPriceReport } from "../../api/priceReports";
+import type { FuelGrade } from "../../lib/fuelPrices";
 import { supabase } from "../../lib/supabaseClient";
 import { addFavorite, removeFavorite, isFavorite as checkIsFavorite } from "../../api/favorites";
 
 import type { Station } from "../../types/station";
-
-function timeAgo(date: string): string {
-  const diffMs = Date.now() - new Date(date).getTime();
-  const mins = Math.floor(diffMs / 60000);
-  if (mins < 60) return `${mins} min ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours} hour${hours !== 1 ? "s" : ""} ago`;
-  const days = Math.floor(hours / 24);
-  return `${days} day${days !== 1 ? "s" : ""} ago`;
-}
+import { describeStationUpdateError } from "../../lib/supabaseErrors";
+import { formatTimeAgo, maxIsoTimestamps } from "../../lib/formatTimeAgo";
+import { extractOcmChargingDetails } from "../../lib/ocmChargingInfo";
 
 const UPDATE_COOLDOWN_MINUTES = 15;
 
@@ -84,21 +79,73 @@ export default function StationDetailsScreen({
 
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [updateSource, setUpdateSource] = useState<"community" | "open-data" | null>(null);
+  /** Latest `price_reports.created_at` per grade (from DB — accurate even if list `station` is stale). */
+  const [gradeReportedAt, setGradeReportedAt] = useState<{
+    petrol?: string;
+    diesel?: string;
+  }>({});
   const [isFavorite, setIsFavorite] = useState(false);
   const [favoriteLoading, setFavoriteLoading] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [priceDraft, setPriceDraft] = useState("");
+  const [submittingGrade, setSubmittingGrade] = useState<FuelGrade | null>(null);
+  const [priceDraftPetrol, setPriceDraftPetrol] = useState("");
+  const [priceDraftDiesel, setPriceDraftDiesel] = useState("");
+  const [photoPetrol, setPhotoPetrol] = useState<File | null>(null);
+  const [photoDiesel, setPhotoDiesel] = useState<File | null>(null);
+  const [photoPreviewPetrol, setPhotoPreviewPetrol] = useState<string | null>(null);
+  const [photoPreviewDiesel, setPhotoPreviewDiesel] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!photoPetrol) {
+      setPhotoPreviewPetrol(null);
+      return;
+    }
+    const url = URL.createObjectURL(photoPetrol);
+    setPhotoPreviewPetrol(url);
+    return () => URL.revokeObjectURL(url);
+  }, [photoPetrol]);
+
+  useEffect(() => {
+    if (!photoDiesel) {
+      setPhotoPreviewDiesel(null);
+      return;
+    }
+    const url = URL.createObjectURL(photoDiesel);
+    setPhotoPreviewDiesel(url);
+    return () => URL.revokeObjectURL(url);
+  }, [photoDiesel]);
 
   const isEV = station.type === "ev";
   const connectorLabels = useMemo(() => extractEvConnectorLabels(station.raw), [station.raw]);
+  const ocmDetails = useMemo(
+    () => (isEV ? extractOcmChargingDetails(station.raw) : null),
+    [isEV, station.raw]
+  );
+
+  const showBothFuelsNote =
+    station.type === "fuel" &&
+    (station.fuelTypes === "both" ||
+      (station.fuelPrices?.petrol != null && station.fuelPrices?.diesel != null));
+
+  /** Prefer fresh DB fetch (`gradeReportedAt`); fall back to list enrichment. */
+  const petrolReportedIso = gradeReportedAt.petrol ?? station.fuelPricesReportedAt?.petrol;
+  const dieselReportedIso = gradeReportedAt.diesel ?? station.fuelPricesReportedAt?.diesel;
 
   useEffect(() => {
-    if (station.price_value != null) {
-      setPriceDraft(station.price_value.toFixed(3));
-    } else {
-      setPriceDraft("");
-    }
-  }, [station.id, station.price_value]);
+    const fp = station.fuelPrices;
+    const noSplit =
+      fp == null ||
+      (fp.petrol == null && fp.diesel == null);
+
+    // Per-grade drafts: only fall back to legacy `price_value` when we have no split community prices.
+    // Otherwise `price_value` is often min(petrol, diesel) and would wrongly pre-fill the other grade.
+    if (fp?.petrol != null) setPriceDraftPetrol(fp.petrol.toFixed(3));
+    else if (noSplit && station.price_value != null) setPriceDraftPetrol(station.price_value.toFixed(3));
+    else setPriceDraftPetrol("");
+
+    if (fp?.diesel != null) setPriceDraftDiesel(fp.diesel.toFixed(3));
+    else if (noSplit && station.price_value != null) setPriceDraftDiesel(station.price_value.toFixed(3));
+    else setPriceDraftDiesel("");
+  }, [station.id, station.price_value, station.fuelPrices]);
 
   useEffect(() => {
     if (!user?.id) return;
@@ -109,17 +156,39 @@ export default function StationDetailsScreen({
     let cancelled = false;
 
     async function loadLastUpdate() {
-      const { data } = await supabase
-        .from("station_updates")
-        .select("created_at")
-        .eq("station_name", station.name)
-        .order("created_at", { ascending: false })
-        .limit(1);
+      setGradeReportedAt({});
+      setLastUpdated(null);
+      setUpdateSource(null);
 
-      if (!cancelled && data?.length) {
-        setLastUpdated(data[0].created_at);
-        setUpdateSource("community");
-        return;
+      if (station.type === "fuel") {
+        const { data } = await supabase
+          .from("price_reports")
+          .select("fuel_grade, created_at")
+          .eq("station_name", station.name)
+          .eq("station_type", "fuel")
+          .order("created_at", { ascending: false });
+
+        if (cancelled) return;
+
+        let petrolAt: string | undefined;
+        let dieselAt: string | undefined;
+        for (const row of data ?? []) {
+          const g = row.fuel_grade as string | null;
+          if (g === "petrol" && !petrolAt) petrolAt = row.created_at;
+          else if (g === "diesel" && !dieselAt) dieselAt = row.created_at;
+          if (petrolAt && dieselAt) break;
+        }
+
+        setGradeReportedAt({ petrol: petrolAt, diesel: dieselAt });
+
+        const latestCommunity = maxIsoTimestamps(
+          [petrolAt, dieselAt].filter((x): x is string => typeof x === "string")
+        );
+        if (latestCommunity) {
+          setLastUpdated(latestCommunity);
+          setUpdateSource("community");
+          return;
+        }
       }
 
       const ocmRaw = station.raw as
@@ -139,19 +208,22 @@ export default function StationDetailsScreen({
     };
   }, [station]);
 
-  const handleSubmitUpdate = async () => {
+  const handleSubmitGrade = async (grade: FuelGrade) => {
     if (!user) {
       showToast("Please sign in to submit updates", "error");
       return;
     }
 
-    if (submitting) return;
+    if (submittingGrade) return;
+
+    const draft = grade === "petrol" ? priceDraftPetrol : priceDraftDiesel;
 
     const { data: recent } = await supabase
-      .from("station_updates")
+      .from("price_reports")
       .select("created_at")
-      .eq("user_id", user.id)
+      .eq("reporter_id", user.id)
       .eq("station_name", station.name)
+      .eq("fuel_grade", grade)
       .order("created_at", { ascending: false })
       .limit(1);
 
@@ -159,34 +231,38 @@ export default function StationDetailsScreen({
       const mins = minutesSince(recent[0].created_at);
       if (mins < UPDATE_COOLDOWN_MINUTES) {
         showToast(
-          `Please wait ${Math.ceil(UPDATE_COOLDOWN_MINUTES - mins)} more minute${Math.ceil(UPDATE_COOLDOWN_MINUTES - mins) !== 1 ? "s" : ""} before submitting another update.`,
+          `Please wait ${Math.ceil(UPDATE_COOLDOWN_MINUTES - mins)} more minute${Math.ceil(UPDATE_COOLDOWN_MINUTES - mins) !== 1 ? "s" : ""} before another ${grade} update here.`,
           "error"
         );
         return;
       }
     }
 
-    const newPrice = Number(priceDraft.replace(",", "."));
+    const newPrice = Number(draft.replace(",", "."));
     if (!Number.isFinite(newPrice) || newPrice <= 0) {
       showToast("Enter a valid price per litre (e.g. 1.549)", "error");
       return;
     }
 
-    setSubmitting(true);
+    setSubmittingGrade(grade);
     try {
-      await submitStationUpdate({
+      await submitPriceReport({
         userId: user.id,
         station,
-        newPrice,
-        note: null,
+        fuelGrade: grade,
+        price: newPrice,
+        photoFile: grade === "petrol" ? photoPetrol : photoDiesel,
       });
+
+      if (grade === "petrol") setPhotoPetrol(null);
+      else setPhotoDiesel(null);
 
       onSubmitUpdate();
     } catch (error) {
       console.error("Failed to submit update:", error);
-      showToast("Failed to submit update. Please try again.", "error");
+      showToast(describeStationUpdateError(error), "error");
     } finally {
-      setSubmitting(false);
+      setSubmittingGrade(null);
     }
   };
 
@@ -327,6 +403,16 @@ export default function StationDetailsScreen({
                     {station.rating.toFixed(1)}
                   </span>
                 )}
+                {!isEV && station.isOpen === true && (
+                  <span className="text-[11px] font-medium text-emerald-400/95 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5">
+                    Likely open now
+                  </span>
+                )}
+                {!isEV && station.isOpen === false && (
+                  <span className="text-[11px] font-medium text-white/40 rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5">
+                    May be closed now
+                  </span>
+                )}
               </div>
             </div>
           </div>
@@ -339,20 +425,67 @@ export default function StationDetailsScreen({
           )}
         </div>
 
-        {/* Price — fuel */}
+        {/* Price — fuel (petrol & diesel tracked separately) */}
         {station.type === "fuel" && (
           <section className="rounded-3xl border border-[#00E0C6]/20 bg-[#12151c] overflow-hidden">
             <div className="px-5 py-5 border-b border-white/[0.06]">
-              <p className="text-[11px] font-semibold uppercase tracking-wider text-white/40 mb-1">
-                Price
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-white/40 mb-3">
+                Community prices
               </p>
-              {station.price_value != null ? (
+              {showBothFuelsNote && (
+                <p className="text-xs text-white/50 leading-relaxed mb-3 rounded-xl bg-white/[0.03] border border-white/[0.06] px-3 py-2">
+                  Most forecourts sell <span className="text-white/75">both</span> petrol and diesel,
+                  but the price per litre is almost always{" "}
+                  <span className="text-white/75">different for each</span>. Report and compare them
+                  separately below.
+                </p>
+              )}
+              {station.fuelPrices?.petrol != null || station.fuelPrices?.diesel != null ? (
+                <div className="flex flex-wrap gap-6 items-end justify-between">
+                  <div className="flex flex-wrap gap-8">
+                    {station.fuelPrices?.petrol != null && (
+                      <div>
+                        <p className="text-xs text-white/45 mb-1">Petrol</p>
+                        <p className="text-3xl font-bold tabular-nums text-[#5eead4] leading-none">
+                          €{station.fuelPrices.petrol.toFixed(2)}
+                          <span className="text-sm text-white/40 font-medium">/L</span>
+                        </p>
+                        {petrolReportedIso && (
+                          <p className="text-[10px] text-white/35 mt-1.5">
+                            Reported {formatTimeAgo(petrolReportedIso)}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    {station.fuelPrices?.diesel != null && (
+                      <div>
+                        <p className="text-xs text-white/45 mb-1">Diesel</p>
+                        <p className="text-3xl font-bold tabular-nums text-[#5eead4] leading-none">
+                          €{station.fuelPrices.diesel.toFixed(2)}
+                          <span className="text-sm text-white/40 font-medium">/L</span>
+                        </p>
+                        {dieselReportedIso && (
+                          <p className="text-[10px] text-white/35 mt-1.5">
+                            Reported {formatTimeAgo(dieselReportedIso)}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  {station.priceSource === "community" && (
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/12 border border-emerald-500/25 px-3 py-1 text-xs font-semibold text-emerald-300/95 shrink-0">
+                      <TrendingUp className="w-3.5 h-3.5" aria-hidden />
+                      Community
+                    </span>
+                  )}
+                </div>
+              ) : station.price_value != null ? (
                 <div className="flex flex-wrap items-end justify-between gap-3">
                   <div>
                     <p className="text-4xl font-bold tabular-nums text-[#5eead4] leading-none">
                       €{station.price_value.toFixed(2)}
                     </p>
-                    <p className="text-sm text-white/45 mt-2">per litre</p>
+                    <p className="text-sm text-white/45 mt-2">per litre (unspecified grade)</p>
                   </div>
                   {station.priceSource === "community" && (
                     <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/12 border border-emerald-500/25 px-3 py-1 text-xs font-semibold text-emerald-300/95">
@@ -363,58 +496,225 @@ export default function StationDetailsScreen({
                 </div>
               ) : (
                 <p className="text-sm text-white/50 leading-relaxed">
-                  No community price yet. Be the first to add one below.
+                  No community price yet. Add petrol and diesel below — they are usually different.
                 </p>
               )}
+              {station.priceSource === "community" &&
+                station.fuelPrices?.petrol != null &&
+                station.fuelPrices?.diesel != null && (
+                  <p className="text-[11px] text-white/40 mt-3">
+                    Each time is when that fuel was last reported — updating one does not reset the
+                    other.
+                  </p>
+                )}
+              <p className="text-[11px] text-amber-200/70 mt-3 leading-relaxed">
+                Community prices are <span className="font-medium text-amber-200/90">estimates</span> —
+                always take the price from the pump display before you fill up.
+              </p>
             </div>
 
-            <div className="px-5 py-4 bg-white/[0.02]">
-              <label htmlFor="price-draft" className="text-xs font-medium text-white/50 block mb-2">
-                Report price (€/L)
-              </label>
-              <div className="flex gap-2">
-                <input
-                  id="price-draft"
-                  type="text"
-                  inputMode="decimal"
-                  placeholder="e.g. 1.549"
-                  value={priceDraft}
-                  onChange={(e) => setPriceDraft(e.target.value)}
-                  className="flex-1 min-w-0 rounded-xl border border-white/10 bg-[#0D0F14] px-4 py-3 text-white text-base placeholder:text-white/25 focus:outline-none focus:ring-2 focus:ring-[#00E0C6]/40"
-                />
-                <button
-                  type="button"
-                  onClick={handleSubmitUpdate}
-                  disabled={submitting || !user}
-                  title={!user ? "Sign in to submit a price" : undefined}
-                  className="shrink-0 rounded-xl bg-gradient-to-r from-[#00E0C6] to-[#0097FF] px-5 py-3 text-[#0D0F14] text-sm font-bold disabled:opacity-45 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
-                >
-                  {submitting ? "…" : "Submit"}
-                </button>
+            <div className="px-5 py-4 bg-white/[0.02] space-y-4">
+              <p className="text-[11px] text-white/40 leading-relaxed flex gap-2">
+                <Camera className="w-3.5 h-3.5 shrink-0 mt-0.5 text-white/35" aria-hidden />
+                Optional photo of the pump or price display helps keep data trustworthy. Avoid people and
+                readable number plates if you can.
+              </p>
+              <div>
+                <label htmlFor="price-draft-petrol" className="text-xs font-medium text-white/50 block mb-2">
+                  Report petrol (€/L)
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    id="price-draft-petrol"
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="e.g. 1.549"
+                    value={priceDraftPetrol}
+                    onChange={(e) => setPriceDraftPetrol(e.target.value)}
+                    className="flex-1 min-w-0 rounded-xl border border-white/10 bg-[#0D0F14] px-4 py-3 text-white text-base placeholder:text-white/25 focus:outline-none focus:ring-2 focus:ring-[#00E0C6]/40"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleSubmitGrade("petrol")}
+                    disabled={submittingGrade !== null || !user}
+                    title={!user ? "Sign in to submit a price" : undefined}
+                    className="shrink-0 rounded-xl bg-gradient-to-r from-[#00E0C6] to-[#0097FF] px-4 py-3 text-[#0D0F14] text-sm font-bold disabled:opacity-45 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+                  >
+                    {submittingGrade === "petrol" ? "…" : "Submit"}
+                  </button>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <input
+                    id="photo-petrol"
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    className="hidden"
+                    onChange={(e) => setPhotoPetrol(e.target.files?.[0] ?? null)}
+                  />
+                  <label
+                    htmlFor="photo-petrol"
+                    className="text-xs font-medium text-[#00E0C6]/90 cursor-pointer hover:underline"
+                  >
+                    + Add photo (optional)
+                  </label>
+                  {photoPetrol && (
+                    <button
+                      type="button"
+                      className="text-xs text-white/40 hover:text-white/60"
+                      onClick={() => setPhotoPetrol(null)}
+                    >
+                      Remove photo
+                    </button>
+                  )}
+                </div>
+                {photoPreviewPetrol && (
+                  <img
+                    src={photoPreviewPetrol}
+                    alt=""
+                    className="mt-2 max-h-28 rounded-lg border border-white/10 object-contain"
+                  />
+                )}
               </div>
-              <p className="text-[11px] text-white/35 mt-2">
+              <div>
+                <label htmlFor="price-draft-diesel" className="text-xs font-medium text-white/50 block mb-2">
+                  Report diesel (€/L)
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    id="price-draft-diesel"
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="e.g. 1.629"
+                    value={priceDraftDiesel}
+                    onChange={(e) => setPriceDraftDiesel(e.target.value)}
+                    className="flex-1 min-w-0 rounded-xl border border-white/10 bg-[#0D0F14] px-4 py-3 text-white text-base placeholder:text-white/25 focus:outline-none focus:ring-2 focus:ring-[#00E0C6]/40"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleSubmitGrade("diesel")}
+                    disabled={submittingGrade !== null || !user}
+                    title={!user ? "Sign in to submit a price" : undefined}
+                    className="shrink-0 rounded-xl bg-gradient-to-r from-[#00E0C6] to-[#0097FF] px-4 py-3 text-[#0D0F14] text-sm font-bold disabled:opacity-45 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+                  >
+                    {submittingGrade === "diesel" ? "…" : "Submit"}
+                  </button>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <input
+                    id="photo-diesel"
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    className="hidden"
+                    onChange={(e) => setPhotoDiesel(e.target.files?.[0] ?? null)}
+                  />
+                  <label
+                    htmlFor="photo-diesel"
+                    className="text-xs font-medium text-[#00E0C6]/90 cursor-pointer hover:underline"
+                  >
+                    + Add photo (optional)
+                  </label>
+                  {photoDiesel && (
+                    <button
+                      type="button"
+                      className="text-xs text-white/40 hover:text-white/60"
+                      onClick={() => setPhotoDiesel(null)}
+                    >
+                      Remove photo
+                    </button>
+                  )}
+                </div>
+                {photoPreviewDiesel && (
+                  <img
+                    src={photoPreviewDiesel}
+                    alt=""
+                    className="mt-2 max-h-28 rounded-lg border border-white/10 object-contain"
+                  />
+                )}
+              </div>
+              <p className="text-[11px] text-white/35">
                 {!user
                   ? "Sign in to submit · "
-                  : `One update per ${UPDATE_COOLDOWN_MINUTES} min · `}
-                estimates only — check pump price before filling
+                  : `Each grade: one update per ${UPDATE_COOLDOWN_MINUTES} min · `}
+                Estimates only — always check the pump.
               </p>
             </div>
           </section>
         )}
 
-        {/* EV */}
-        {isEV && (
-          <section className="rounded-3xl border border-emerald-500/20 bg-gradient-to-br from-emerald-500/[0.07] to-[#12151c] p-5">
-            <div className="flex items-start gap-3 mb-4">
-              <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-500/15 border border-emerald-500/25">
+        {/* EV — power, AC/DC, pricing hints, access (from Open Charge Map) */}
+        {isEV && ocmDetails && (
+          <section className="rounded-3xl border border-emerald-500/20 bg-gradient-to-br from-emerald-500/[0.07] to-[#12151c] p-5 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-emerald-500/15 border border-emerald-500/25">
                 <Zap className="w-5 h-5 text-emerald-400" />
               </div>
-              <div>
+              <div className="min-w-0">
                 <h2 className="text-white font-semibold">Charging</h2>
-                <p className="text-sm text-white/45 mt-0.5">Connectors at this location</p>
+                <p className="text-sm text-white/45 mt-0.5">
+                  From Open Charge Map — operators may charge session fees or idle time; confirm before you plug in.
+                </p>
               </div>
             </div>
-            {connectorLabels.length > 0 ? (
+
+            {(ocmDetails.maxPowerKw != null || ocmDetails.hasAC || ocmDetails.hasDC) && (
+              <div className="flex flex-wrap gap-2 items-center text-sm">
+                {ocmDetails.maxPowerKw != null && (
+                  <span className="rounded-lg bg-emerald-500/15 border border-emerald-500/30 px-2.5 py-1 font-semibold tabular-nums text-emerald-200">
+                    Up to {ocmDetails.maxPowerKw} kW
+                  </span>
+                )}
+                {ocmDetails.hasAC && (
+                  <span className="rounded-lg bg-white/5 border border-white/10 px-2.5 py-1 text-xs text-white/70">
+                    AC
+                  </span>
+                )}
+                {ocmDetails.hasDC && (
+                  <span className="rounded-lg bg-white/5 border border-white/10 px-2.5 py-1 text-xs text-white/70">
+                    DC
+                  </span>
+                )}
+              </div>
+            )}
+
+            {ocmDetails.usageCost && (
+              <p className="text-sm text-emerald-200/90">
+                <span className="text-white/45">Pricing note: </span>
+                {ocmDetails.usageCost}
+              </p>
+            )}
+
+            {ocmDetails.operatorWebsiteUrl && (
+              <a
+                href={ocmDetails.operatorWebsiteUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 text-sm font-medium text-[#00E0C6] hover:text-[#5eead4]"
+              >
+                <ExternalLink className="w-4 h-4 shrink-0" aria-hidden />
+                Operator / network website
+              </a>
+            )}
+
+            {ocmDetails.connections.length > 0 ? (
+              <ul className="space-y-2">
+                {ocmDetails.connections.map((c, i) => (
+                  <li
+                    key={`${c.connectorTitle}-${i}`}
+                    className="rounded-xl border border-white/[0.07] bg-[#0D0F14]/60 px-3 py-2.5 text-xs"
+                  >
+                    <p className="font-medium text-white/90">{c.connectorTitle}</p>
+                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-white/45">
+                      {c.powerKw != null && <span>{c.powerKw} kW</span>}
+                      {c.currentLabel && <span>{c.currentLabel}</span>}
+                      {c.statusTitle && <span>{c.statusTitle}</span>}
+                      {c.usageTypeTitle && <span>{c.usageTypeTitle}</span>}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ) : connectorLabels.length > 0 ? (
               <div className="flex flex-wrap gap-2">
                 {connectorLabels.map((label) => (
                   <span
@@ -427,9 +727,34 @@ export default function StationDetailsScreen({
               </div>
             ) : (
               <p className="text-sm text-white/45">
-                Connector details will match your filter settings when listed on the map.
+                Limited connector detail for this listing. Check the operator app or on-site signage.
               </p>
             )}
+
+            {ocmDetails.accessComments && (
+              <p className="text-xs text-white/50 leading-relaxed border-t border-white/[0.06] pt-3">
+                <span className="text-white/65 font-medium">Access: </span>
+                {ocmDetails.accessComments}
+              </p>
+            )}
+
+            {ocmDetails.generalComments && (
+              <p className="text-xs text-white/45 leading-relaxed">{ocmDetails.generalComments}</p>
+            )}
+
+            {ocmDetails.lastStatusUpdate && (
+              <p className="text-[11px] text-white/35">
+                Listing last status change: {formatTimeAgo(ocmDetails.lastStatusUpdate)} —{" "}
+                <span className="text-amber-200/80">
+                  availability may have changed; treat as a guide only.
+                </span>
+              </p>
+            )}
+
+            <p className="text-[11px] text-white/35 leading-relaxed border-t border-white/[0.06] pt-3">
+              Physical access (e.g. cable reach, bay size) varies by site — check on arrival if you need
+              specific accessibility.
+            </p>
           </section>
         )}
 
@@ -440,7 +765,7 @@ export default function StationDetailsScreen({
               <Clock className="w-[18px] h-[18px] text-white/35 shrink-0" />
               <div className="min-w-0">
                 <p className="text-sm font-medium text-white/90">Last updated</p>
-                <p className="text-xs text-white/45">{timeAgo(lastUpdated)}</p>
+                <p className="text-xs text-white/45">{formatTimeAgo(lastUpdated)}</p>
               </div>
             </div>
             <div className="flex items-center gap-1.5 text-xs text-white/45 shrink-0">
@@ -487,7 +812,7 @@ export default function StationDetailsScreen({
             </p>
             <p className="text-xs text-white/50 leading-relaxed mt-1">
               {isEV
-                ? "Availability and connectors can change. Confirm on site or with the operator app."
+                ? "Power, pricing, and socket availability can change. Use the operator app or on-site info before you travel."
                 : "Fuel prices are crowd-sourced. Always check the pump before you fill up."}
             </p>
           </div>

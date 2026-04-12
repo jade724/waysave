@@ -218,6 +218,12 @@ export default function FilterScreen({
                 </button>
               ))}
             </div>
+            <p className="mt-3 text-xs text-white/45 leading-relaxed">
+              Most forecourts sell both petrol and diesel, but the price per litre is usually{" "}
+              <span className="text-white/65">different for each</span>. Pick{" "}
+              <span className="text-white/65">Petrol</span> or <span className="text-white/65">Diesel</span>{" "}
+              here to match what you plan to buy — &quot;Both&quot; means sites that sell both grades.
+            </p>
           </div>
 
           {/* EV Connectors */}

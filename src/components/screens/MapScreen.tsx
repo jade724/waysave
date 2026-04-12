@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   Fuel,
   Zap,
+  Heart,
   Filter,
   LogOut,
   List,
@@ -21,8 +23,11 @@ import {
 import GoogleMapBackground, { type MapHandle, type RouteInfo } from "../map/GoogleMapBackground";
 import DirectionsPanel from "../map/DirectionsPanel";
 import StationCard from "../shared/StationCard";
+import StationListSkeleton from "../shared/StationListSkeleton";
 
+import { fetchUserFavorites } from "../../api/favorites";
 import { fetchEVStations, type OCMStation } from "../../api/openChargeMap";
+import { extractOcmChargingDetails } from "../../lib/ocmChargingInfo";
 import { loadFuelStations } from "../../api/fuelStations";
 import { enrichWithCommunityPrices } from "../../api/enrichStationsWithPrices";
 import { calculateDistanceKm } from "../../lib/distance";
@@ -35,6 +40,7 @@ import { devLog } from "../../lib/logger";
 import { stripHtml } from "../../lib/stripHtml";
 
 import type { Station } from "../../types/station";
+import { effectiveFuelPriceEurPerL } from "../../lib/fuelPrices";
 import type { UserPreferences } from "../../lib/preferences";
 import { useAuth } from "../../lib/authContext";
 
@@ -75,8 +81,11 @@ function rankStations(
         const priceWeight = prefs.priceSensitivity;
         const distanceWeight = 1 - prefs.priceSensitivity;
 
-        const aScore = (a.price_value ?? 999) * priceWeight + (a.distance_km ?? 0) * distanceWeight;
-        const bScore = (b.price_value ?? 999) * priceWeight + (b.distance_km ?? 0) * distanceWeight;
+        const aPrice = effectiveFuelPriceEurPerL(a, prefs.fuelType) ?? 999;
+        const bPrice = effectiveFuelPriceEurPerL(b, prefs.fuelType) ?? 999;
+
+        const aScore = aPrice * priceWeight + (a.distance_km ?? 0) * distanceWeight;
+        const bScore = bPrice * priceWeight + (b.distance_km ?? 0) * distanceWeight;
 
         return aScore - bScore;
       }
@@ -171,6 +180,20 @@ export default function MapScreen({
   const [showDirectionsPanel, setShowDirectionsPanel] = useState(false);
   const [showTraffic, setShowTraffic] = useState(false);
 
+  /** Bump to re-fetch EV + fuel lists (pull-to-refresh / retry). */
+  const [listRefreshKey, setListRefreshKey] = useState(0);
+  const bumpListRefresh = useCallback(() => setListRefreshKey((k) => k + 1), []);
+
+  const [mapHintDismissed, setMapHintDismissed] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return localStorage.getItem("waysave_map_source_hint_v1") === "1";
+  });
+
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
+
+  const listScrollParentRef = useRef<HTMLDivElement>(null);
+
   const routeInfo = useMemo(
     () => routeInfos[selectedRouteIndex] ?? null,
     [routeInfos, selectedRouteIndex]
@@ -233,26 +256,64 @@ export default function MapScreen({
   }, [prefs.locationLiveUpdates, followMe]);
 
   useEffect(() => {
+    let cancelled = false;
+
+    const applyPosition = (pos: GeolocationPosition) => {
+      const next = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      setUserLocation(next);
+      setLivePosition(next);
+      const h = pos.coords.heading;
+      setLiveHeading(h != null && !Number.isNaN(h) ? h : null);
+      setLocationLoading(false);
+      setLocationError(false);
+    };
+
+    const applyFallback = () => {
+      setUserLocation(FALLBACK_LOCATION);
+      setLivePosition(FALLBACK_LOCATION);
+      setLiveHeading(null);
+      setLocationLoading(false);
+      setLocationError(true);
+    };
+
+    if (!navigator.geolocation) {
+      applyFallback();
+      return;
+    }
+
     setLocationLoading(true);
-    navigator.geolocation?.getCurrentPosition(
+
+    /** First try: user prefs (often high accuracy). Second: lower accuracy after delay — helps macOS / desktop. */
+    navigator.geolocation.getCurrentPosition(
       (pos) => {
-        const next = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-        setUserLocation(next);
-        setLivePosition(next);
-        const h = pos.coords.heading;
-        setLiveHeading(h != null && !Number.isNaN(h) ? h : null);
-        setLocationLoading(false);
-        setLocationError(false);
+        if (!cancelled) applyPosition(pos);
       },
-      () => {
-        setUserLocation(FALLBACK_LOCATION);
-        setLivePosition(FALLBACK_LOCATION);
-        setLiveHeading(null);
-        setLocationLoading(false);
-        setLocationError(true);
+      (err) => {
+        devLog("Geolocation first attempt failed", err?.code, err?.message);
+        window.setTimeout(() => {
+          if (cancelled) return;
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              if (!cancelled) applyPosition(pos);
+            },
+            (err2) => {
+              devLog("Geolocation retry failed", err2?.code, err2?.message);
+              if (!cancelled) applyFallback();
+            },
+            {
+              enableHighAccuracy: false,
+              timeout: 20_000,
+              maximumAge: 60_000,
+            }
+          );
+        }, 800);
       },
       { ...geoBaseOptions, maximumAge: 15_000 }
     );
+
+    return () => {
+      cancelled = true;
+    };
   }, [geoBaseOptions]);
 
   useEffect(() => {
@@ -357,21 +418,28 @@ export default function MapScreen({
         );
         if (cancelled) return;
 
-        const formatted: Station[] = data.map((ev: OCMStation) => ({
-          id: String(ev.AddressInfo.ID),
-          externalId: String(ev.AddressInfo.ID),
-          name: ev.AddressInfo.Title,
-          lat: ev.AddressInfo.Latitude,
-          lng: ev.AddressInfo.Longitude,
-          type: "ev" as const,
-          distance_km: calculateDistanceKm(
-            userLocation.lat,
-            userLocation.lng,
-            ev.AddressInfo.Latitude,
-            ev.AddressInfo.Longitude
-          ),
-          raw: ev,
-        }));
+        const formatted: Station[] = data.map((ev: OCMStation) => {
+          const raw = ev as unknown;
+          const ocm = extractOcmChargingDetails(raw);
+          return {
+            id: String(ev.AddressInfo.ID),
+            externalId: String(ev.AddressInfo.ID),
+            name: ev.AddressInfo.Title,
+            lat: ev.AddressInfo.Latitude,
+            lng: ev.AddressInfo.Longitude,
+            type: "ev" as const,
+            distance_km: calculateDistanceKm(
+              userLocation.lat,
+              userLocation.lng,
+              ev.AddressInfo.Latitude,
+              ev.AddressInfo.Longitude
+            ),
+            evMaxPowerKw: ocm.maxPowerKw,
+            evUsageCostHint: ocm.usageCost,
+            evOperatorWebsiteUrl: ocm.operatorWebsiteUrl,
+            raw: ev,
+          };
+        });
 
         // Update state with formatted stations
         setEvStations(formatted);
@@ -387,8 +455,10 @@ export default function MapScreen({
 
     // Load fuel stations with error handling and loading state
     loadEV();
-    return () => { cancelled = true; };
-  }, [userLocation, prefs.maxDistanceKm, prefs.connectors])
+    return () => {
+      cancelled = true;
+    };
+  }, [userLocation, prefs.maxDistanceKm, prefs.connectors, listRefreshKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -422,8 +492,10 @@ export default function MapScreen({
     }
 
     loadFuel();
-    return () => { cancelled = true; };
-  }, [userLocation, prefs.maxDistanceKm, prefs.fuelType]);
+    return () => {
+      cancelled = true;
+    };
+  }, [userLocation, prefs.maxDistanceKm, prefs.fuelType, listRefreshKey]);
 
 
   // Apply ranking algorithm with memoization
@@ -444,6 +516,46 @@ export default function MapScreen({
     if (!q) return base;
     return base.filter((station) => station.name.toLowerCase().includes(q));
   }, [activeTab, fuelRanked, evRanked, searchQuery]);
+
+  useEffect(() => {
+    if (!user?.id) {
+      setFavoriteIds(new Set());
+      return;
+    }
+    let cancelled = false;
+    fetchUserFavorites(user.id)
+      .then((favs) => {
+        if (!cancelled) setFavoriteIds(new Set(favs.map((f) => f.id)));
+      })
+      .catch(() => {
+        if (!cancelled) setFavoriteIds(new Set());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id, listRefreshKey]);
+
+  const listStations = useMemo(() => {
+    if (!favoritesOnly || !user?.id) return rankedStations;
+    return rankedStations.filter((s) => favoriteIds.has(s.id));
+  }, [rankedStations, favoritesOnly, favoriteIds, user?.id]);
+
+  const cheapestHint = useMemo(() => {
+    if (activeTab !== "fuel" || prefs.preference !== "cheapest" || listStations.length === 0) {
+      return null;
+    }
+    const top = listStations[0];
+    const p = effectiveFuelPriceEurPerL(top, prefs.fuelType);
+    if (p == null) return null;
+    return { name: top.name, price: p };
+  }, [activeTab, prefs.preference, prefs.fuelType, listStations]);
+
+  const rowVirtualizer = useVirtualizer({
+    count: listStations.length,
+    getScrollElement: () => listScrollParentRef.current,
+    estimateSize: () => 100,
+    overscan: 8,
+  });
 
   /** Align default / active route alternative with Filters “search preference” (nearest / fastest / cheapest→distance). */
   useEffect(() => {
@@ -518,6 +630,8 @@ export default function MapScreen({
     setShowDirectionsPanel(false);
     setRouteInfos([]);
     setSelectedRouteIndex(0);
+    // Give the map + polyline room; user can drag the sheet up to pick another station.
+    setSheetState("collapsed");
   };
 
   const handleRoutesCalculated = useCallback((routes: RouteInfo[]) => {
@@ -533,6 +647,7 @@ export default function MapScreen({
     setNavStepIndex(0);
     setShowDirectionsPanel(false);
     mapRef.current?.clearRoute();
+    setSheetState("half");
   };
 
   const handleToggleTraffic = () => {
@@ -599,7 +714,7 @@ export default function MapScreen({
         <GoogleMapBackground
           ref={mapRef}
           userLocation={mapDisplayPosition}
-          markers={rankedStations}
+          markers={listStations}
           zoom={13}
           onPinSelect={handleStationSelectForRoute}
           selectedStation={selectedStationForRoute}
@@ -638,7 +753,12 @@ export default function MapScreen({
                 {greeting}, {name.split(' ')[0]}
               </p>
               {locationError && (
-                <p className="text-orange-400 text-[10px] mt-0.5">Default location</p>
+                <p
+                  className="text-orange-400 text-[10px] mt-0.5"
+                  title="Browser could not read your position (check site location permission, macOS Location Services, or try again). Map uses Dublin as a fallback."
+                >
+                  Default location
+                </p>
               )}
             </div>
 
@@ -768,6 +888,31 @@ export default function MapScreen({
               <span className="opacity-70">({evRanked.length})</span>
             </button>
           </div>
+
+          {!mapHintDismissed && (
+            <div className="rounded-xl border border-[#00E0C6]/20 bg-[#0D0F14]/95 px-3 py-2.5 text-[11px] text-white/55 leading-relaxed flex gap-2 items-start shadow-lg">
+              <span className="text-[#00E0C6] shrink-0" aria-hidden>
+                ℹ
+              </span>
+              <div className="min-w-0 flex-1">
+                <span className="text-white/75 font-medium">Fuel</span> stations come from{" "}
+                <span className="text-white/80">Google Places</span>.{" "}
+                <span className="text-white/75 font-medium">EV</span> chargers come from{" "}
+                <span className="text-white/80">Open Charge Map</span> — different sources, like
+                Google Maps vs plug-in data.
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  localStorage.setItem("waysave_map_source_hint_v1", "1");
+                  setMapHintDismissed(true);
+                }}
+                className="shrink-0 text-[10px] font-semibold text-[#00E0C6] hover:text-[#5eead4]"
+              >
+                Got it
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -783,17 +928,16 @@ export default function MapScreen({
                     <div className="w-2 h-2 bg-[#00E0C6] rounded-full animate-pulse" />
                     <p className="text-white font-bold text-sm">Active Route</p>
                   </div>
-                  <p className="text-white/60 text-xs">
+                  <p className="text-white/60 text-xs line-clamp-2">
                     To {selectedStationForRoute.name}
                   </p>
                   <p className="text-white/35 text-[10px] mt-1 leading-snug">
-                    <span className="capitalize text-white/50">{prefs.preference}</span> sort — same
-                    as the station list. Route alternatives default to that sort.
+                    Route options follow your{" "}
+                    <span className="capitalize text-white/45">{prefs.preference}</span> preference
                     {prefs.maxDistanceKm > 0 ? (
-                      <> List stations: within {prefs.maxDistanceKm} km.</>
-                    ) : (
-                      <> List: no distance cap.</>
-                    )}
+                      <> · list within {prefs.maxDistanceKm} km</>
+                    ) : null}
+                    .
                   </p>
                 </div>
                 
@@ -1072,35 +1216,73 @@ export default function MapScreen({
 
               {/* Stats Header */}
               <div className="px-4 pb-3 border-b border-white/10">
-                <div className="flex items-center justify-between">
-                  <div>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
                     <p className="text-white font-semibold flex items-center gap-2">
-                      {rankedStations.length} Station{rankedStations.length !== 1 ? 's' : ''}
+                      {listStations.length} Station{listStations.length !== 1 ? "s" : ""}
+                      {favoritesOnly ? " · favourites" : ""}
                       {sheetState === "expanded" && (
-                        <ChevronDown className="w-4 h-4 text-white/50" />
+                        <ChevronDown className="w-4 h-4 text-white/50 shrink-0" />
                       )}
                       {sheetState === "collapsed" && (
-                        <ChevronUp className="w-4 h-4 text-white/50" />
+                        <ChevronUp className="w-4 h-4 text-white/50 shrink-0" />
                       )}
                     </p>
                     <p className="text-white/50 text-xs">
-                      {prefs.preference === "nearest" 
-                        ? "Nearest first" 
+                      {prefs.preference === "nearest"
+                        ? "Nearest first"
                         : prefs.preference === "cheapest"
-                        ? "Best value first"
-                        : "Fastest route first"
-                      }
+                          ? "Best value first"
+                          : "Fastest route first"}
                     </p>
+                    {cheapestHint && (
+                      <p className="text-[10px] text-emerald-300/90 mt-1 truncate" title={cheapestHint.name}>
+                        Top pick: €{cheapestHint.price.toFixed(2)}/L · {cheapestHint.name}
+                      </p>
+                    )}
                   </div>
-                  
-                  <div className="flex items-center gap-2">
+
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {user && (
+                      <button
+                        type="button"
+                        onClick={() => setFavoritesOnly((v) => !v)}
+                        aria-pressed={favoritesOnly}
+                        title={favoritesOnly ? "Show all stations" : "Favourites only"}
+                        className={`
+                          w-9 h-9 rounded-lg flex items-center justify-center transition
+                          ${
+                            favoritesOnly
+                              ? "bg-rose-500/25 border border-rose-400/40 text-rose-200"
+                              : "bg-white/5 hover:bg-white/10 border border-white/10 text-white/70"
+                          }
+                        `}
+                      >
+                        <Heart
+                          className={`w-4 h-4 ${favoritesOnly ? "fill-current" : ""}`}
+                          aria-hidden
+                        />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => bumpListRefresh()}
+                      disabled={(loadingEV && activeTab === "ev") || (loadingFuel && activeTab === "fuel")}
+                      className="w-9 h-9 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center transition disabled:opacity-40"
+                      aria-label="Refresh station list"
+                      title="Refresh list"
+                    >
+                      <RefreshCw
+                        className={`w-4 h-4 text-white/80 ${(loadingEV && activeTab === "ev") || (loadingFuel && activeTab === "fuel") ? "animate-spin" : ""}`}
+                      />
+                    </button>
                     {searchQuery && (
-                      <p className="text-white/50 text-xs bg-white/5 px-2 py-1 rounded-lg">
+                      <p className="text-white/50 text-xs bg-white/5 px-2 py-1 rounded-lg max-w-[5rem] truncate">
                         "{searchQuery}"
                       </p>
                     )}
-                    
                     <button
+                      type="button"
                       onClick={() => setShowList(false)}
                       className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center transition"
                       aria-label="Hide list"
@@ -1114,87 +1296,162 @@ export default function MapScreen({
 
             {/* SCROLLABLE CONTENT */}
             {sheetState !== "collapsed" && (
-              <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
-                {/* Error State */}
-                {((activeTab === "ev" && evError) || (activeTab === "fuel" && fuelError)) &&  (
-                  <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3">
+              <div
+                ref={listScrollParentRef}
+                className="flex-1 overflow-y-auto px-4 py-3 min-h-0"
+              >
+                {((activeTab === "ev" && evError) || (activeTab === "fuel" && fuelError)) && (
+                  <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 mb-3 space-y-2">
                     <p className="text-red-400 text-sm">
                       {activeTab === "ev" ? evError : fuelError}
                     </p>
+                    <button
+                      type="button"
+                      onClick={() => bumpListRefresh()}
+                      className="text-sm font-semibold text-[#00E0C6] hover:text-[#5eead4]"
+                    >
+                      Retry
+                    </button>
                   </div>
                 )}
 
-                {/* Loading State */}
                 {((loadingEV && activeTab === "ev") || (loadingFuel && activeTab === "fuel")) && (
-                  <div className="text-white/50 text-sm text-center py-8">
-                    <RefreshCw className="w-6 h-6 mx-auto mb-2 animate-spin text-[#00E0C6]" />
-                    <p>Finding nearby stations…</p>
-                  </div>
+                  <StationListSkeleton rows={6} />
                 )}
 
-                {/* Empty State */}
-                {!loadingEV && !loadingFuel && rankedStations.length === 0 && (
-                  <div className="text-center text-white/50 text-sm py-8">
-                    <p className="mb-3">
-                      {searchQuery 
-                        ? `No stations match "${searchQuery}"`
-                        : "No stations match your filters"
-                      }
-                    </p>
-                    <button
-                      onClick={onFiltersClick}
-                      className="px-4 py-2 bg-gradient-to-r from-[#00E0C6] to-[#0097FF] text-[#0D0F14] rounded-xl font-semibold text-sm"
-                    >
-                      Adjust Filters
-                    </button>
-                  </div>
-                )}
+                {!loadingEV &&
+                  !loadingFuel &&
+                  listStations.length === 0 &&
+                  !(activeTab === "ev" && evError) &&
+                  !(activeTab === "fuel" && fuelError) && (
+                    <div className="text-center text-white/50 text-sm py-8">
+                      <p className="mb-3">
+                        {searchQuery.trim()
+                          ? `No stations match "${searchQuery}"`
+                          : favoritesOnly && user && favoriteIds.size === 0
+                            ? "You have no saved favourites yet. Open a station and tap the heart."
+                            : favoritesOnly && rankedStations.length > 0
+                              ? "No favourites in this list — try turning off the heart filter or widen filters."
+                              : "No stations match your filters"}
+                      </p>
+                      <div className="flex flex-wrap gap-2 justify-center">
+                        <button
+                          type="button"
+                          onClick={onFiltersClick}
+                          className="px-4 py-2 bg-gradient-to-r from-[#00E0C6] to-[#0097FF] text-[#0D0F14] rounded-xl font-semibold text-sm"
+                        >
+                          Adjust Filters
+                        </button>
+                        {favoritesOnly && (
+                          <button
+                            type="button"
+                            onClick={() => setFavoritesOnly(false)}
+                            className="px-4 py-2 rounded-xl border border-white/15 text-white/80 text-sm font-medium hover:bg-white/5"
+                          >
+                            Show all stations
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
-                {/* Station Cards */}
-                {rankedStations.map((station, index) => (
-                  <div key={station.id} className="space-y-2">
-                    <StationCard
-                      station={station}
-                      index={index}
-                      prefs={prefs}
-                      onPress={() => onStationClick(station)}
-                    />
-                    
-                    {/* 🆕 Route Button */}
-                    <button
-                      onClick={() => handleStationSelectForRoute(station)}
-                      className={`
-                        w-full py-2 rounded-xl
-                        text-sm font-semibold
-                        flex items-center justify-center gap-2
-                        transition
-                        ${selectedStationForRoute?.id === station.id && showRoute
-                          ? 'bg-gradient-to-r from-[#00E0C6] to-[#0097FF] text-[#0D0F14]'
-                          : 'bg-white/5 hover:bg-white/10 border border-white/10 text-white'
-                        }
-                      `}
+                {!loadingEV &&
+                  !loadingFuel &&
+                  listStations.length > 0 &&
+                  !(activeTab === "ev" && evError) &&
+                  !(activeTab === "fuel" && fuelError) && (
+                    <div
+                      className="relative w-full"
+                      style={{ height: rowVirtualizer.getTotalSize() }}
                     >
-                      <Navigation className="w-4 h-4" />
-                      {selectedStationForRoute?.id === station.id && showRoute ? 'Route Active' : 'Show Route'}
-                    </button>
-                  </div>
-                ))}
+                      {rowVirtualizer.getVirtualItems().map((vi) => {
+                        const station = listStations[vi.index];
+                        const routeActive =
+                          selectedStationForRoute?.id === station.id && showRoute;
+                        return (
+                          <div
+                            key={station.id}
+                            data-index={vi.index}
+                            ref={rowVirtualizer.measureElement}
+                            className="absolute left-0 top-0 w-full flex gap-2 items-stretch pb-2"
+                            style={{ transform: `translateY(${vi.start}px)` }}
+                          >
+                            <div className="flex-1 min-w-0">
+                              <StationCard
+                                station={station}
+                                index={vi.index}
+                                prefs={prefs}
+                                onPress={() => onStationClick(station)}
+                              />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleStationSelectForRoute(station)}
+                              title={routeActive ? "Route active" : "Directions to this station"}
+                              aria-label={
+                                routeActive
+                                  ? "Route active — tap to refresh selection"
+                                  : "Show route to this station"
+                              }
+                              className={`
+                          shrink-0 min-h-[4.75rem] w-[3.35rem] rounded-2xl flex flex-col items-center justify-center gap-0.5
+                          text-[10px] font-semibold leading-tight px-1 transition
+                          ${
+                            routeActive
+                              ? "bg-gradient-to-br from-[#00E0C6] to-[#0097FF] text-[#0D0F14] shadow-[0_0_16px_rgba(0,224,198,0.25)]"
+                              : "bg-white/[0.06] hover:bg-white/10 border border-white/10 text-white/90"
+                          }
+                        `}
+                            >
+                              <Navigation className="w-[18px] h-[18px]" aria-hidden />
+                              {routeActive ? "On" : "Go"}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
               </div>
             )}
 
             {/* COLLAPSED STATE MESSAGE */}
             {sheetState === "collapsed" && (
-              <div className="flex-1 flex items-center justify-center text-white/50 text-sm">
-                <p>👆 Drag up to view stations</p>
+              <div className="flex-1 flex items-center justify-center text-white/45 text-xs px-4 text-center">
+                <p>
+                  {showRoute
+                    ? "Swipe up to browse stations or change destination"
+                    : "👆 Drag up to view stations"}
+                </p>
               </div>
             )}
           </div>
         </div>
       )}
 
+      {/* Route active: peek button to expand station list */}
+      {showList && showRoute && sheetState === "collapsed" && !showDirectionsPanel && (
+        <button
+          type="button"
+          onClick={() => setSheetState("half")}
+          className="
+            absolute bottom-[6.75rem] left-4 z-30
+            pointer-events-auto
+            flex items-center gap-2 px-3 py-2.5 rounded-2xl
+            bg-[#0D0F14]/95 backdrop-blur-md border border-[#00E0C6]/35
+            text-white text-sm font-semibold shadow-lg
+            hover:bg-[#151a24] active:scale-[0.99] transition
+          "
+          aria-label="Expand station list"
+        >
+          <List className="w-4 h-4 text-[#00E0C6]" aria-hidden />
+          Stations
+        </button>
+      )}
+
       {/* SHOW LIST BUTTON - When hidden */}
       {!showList && !showDirectionsPanel && (
         <button
+          type="button"
           onClick={() => {
             setShowList(true);
             setSheetState("half");

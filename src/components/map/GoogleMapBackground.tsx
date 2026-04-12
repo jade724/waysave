@@ -10,6 +10,7 @@ import {
   useState,
 } from "react";
 import type { Station } from "../../types/station";
+import { MarkerClusterer } from "@googlemaps/markerclusterer";
 
 const GOOGLE_MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
 
@@ -66,33 +67,90 @@ export interface MapHandle {
 
 let googleMapsPromise: Promise<void> | null = null;
 
-function loadGoogleMaps(): Promise<void> {
-  if (window.google?.maps) {
-    return Promise.resolve();
+/** True when `new google.maps.Map(...)` is safe (async bootstrap can defer this past `script.onload`). */
+function isMapsCoreReady(): boolean {
+  return (
+    typeof google !== "undefined" &&
+    typeof google.maps?.Map === "function"
+  );
+}
+
+/**
+ * After the Maps script loads, the core may still be bootstrapping (`Map` not a constructor yet).
+ * `loading=async` makes this common — wait for `importLibrary` or poll until `Map` exists.
+ */
+async function waitForMapsCore(): Promise<void> {
+  if (isMapsCoreReady()) return;
+
+  const g = google.maps as typeof google.maps & {
+    importLibrary?: (name: string) => Promise<unknown>;
+  };
+
+  if (typeof g.importLibrary === "function") {
+    try {
+      await g.importLibrary("maps");
+      await g.importLibrary("geometry");
+    } catch {
+      /* Older or restricted clients — fall through to polling */
+    }
+    if (isMapsCoreReady()) return;
   }
 
-  if (!googleMapsPromise) {
-    const p = new Promise<void>((resolve, reject) => {
-      if (!GOOGLE_MAPS_KEY) {
+  const deadline = Date.now() + 15_000;
+  await new Promise<void>((resolve, reject) => {
+    const tick = () => {
+      if (isMapsCoreReady()) {
+        resolve();
+        return;
+      }
+      if (Date.now() > deadline) {
         reject(
           new Error(
-            "Missing VITE_GOOGLE_MAPS_API_KEY — add it to .env.local and restart the dev server."
+            "google.maps.Map did not become available. Check API key, billing, and HTTP referrer restrictions."
           )
         );
         return;
       }
+      requestAnimationFrame(tick);
+    };
+    tick();
+  });
+}
 
-      const script = document.createElement("script");
-      script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_KEY}&loading=async&libraries=geometry`;
-      script.async = true;
-      script.defer = true;
+function loadGoogleMaps(): Promise<void> {
+  if (isMapsCoreReady()) {
+    return Promise.resolve();
+  }
 
-      script.onload = () => resolve();
-      script.onerror = () =>
-        reject(new Error("Could not load Google Maps (check network and API key restrictions)."));
+  if (!googleMapsPromise) {
+    const p = (async () => {
+      if (!GOOGLE_MAPS_KEY) {
+        throw new Error(
+          "Missing VITE_GOOGLE_MAPS_API_KEY — add it to .env.local and restart the dev server."
+        );
+      }
 
-      document.head.appendChild(script);
-    });
+      await new Promise<void>((resolve, reject) => {
+        const script = document.createElement("script");
+        // No `loading=async` — it often leaves `google.maps.Map` undefined at `onload`.
+        script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_KEY}&libraries=geometry`;
+        script.async = true;
+        script.defer = true;
+
+        script.onload = () => resolve();
+        script.onerror = () =>
+          reject(
+            new Error(
+              "Could not load Google Maps (check network and API key restrictions)."
+            )
+          );
+
+        document.head.appendChild(script);
+      });
+
+      await waitForMapsCore();
+    })();
+
     googleMapsPromise = p.catch((err: Error) => {
       googleMapsPromise = null;
       throw err;
@@ -138,6 +196,7 @@ const GoogleMapBackground = forwardRef<MapHandle, Props>(
     const mapInstance = useRef<google.maps.Map | null>(null);
     const latestCenterRef = useRef(userLocation);
     const markerRefs = useRef<google.maps.Marker[]>([]);
+    const clustererRef = useRef<MarkerClusterer | null>(null);
     const userMarkerRef = useRef<google.maps.Marker | null>(null);
     const directionsService = useRef<google.maps.DirectionsService | null>(null);
     const directionsRenderers = useRef<google.maps.DirectionsRenderer[]>([]);
@@ -347,7 +406,7 @@ const GoogleMapBackground = forwardRef<MapHandle, Props>(
       }
     }, [mapReady, followUser, userHeading]);
 
-    // Station pins only — avoids recreating markers on every GPS tick while following.
+    // Station pins — clustered so dense areas stay readable (MarkerClusterer).
     useEffect(() => {
       if (!mapReady || !mapInstance.current) return;
 
@@ -357,16 +416,23 @@ const GoogleMapBackground = forwardRef<MapHandle, Props>(
         if (cancelled || !mapInstance.current) return;
 
         const map = mapInstance.current;
-        markerRefs.current.forEach((m) => m.setMap(null));
+
+        clustererRef.current?.setMap(null);
+        clustererRef.current = null;
+        markerRefs.current.forEach((m) => {
+          m.setMap(null);
+        });
         markerRefs.current = [];
 
+        if (markers.length === 0) return;
+
+        const newMarkers: google.maps.Marker[] = [];
         markers.forEach((station) => {
           const isEV = station.type === "ev";
           const isSelected = selectedStation?.id === station.id;
 
           const marker = new google.maps.Marker({
             position: { lat: station.lat, lng: station.lng },
-            map,
             icon: {
               path: google.maps.SymbolPath.CIRCLE,
               scale: isSelected ? 14 : 9,
@@ -384,12 +450,19 @@ const GoogleMapBackground = forwardRef<MapHandle, Props>(
             onPinSelect(station);
           });
 
-          markerRefs.current.push(marker);
+          newMarkers.push(marker);
         });
+
+        markerRefs.current = newMarkers;
+        clustererRef.current = new MarkerClusterer({ map, markers: newMarkers });
       });
 
       return () => {
         cancelled = true;
+        clustererRef.current?.setMap(null);
+        clustererRef.current = null;
+        markerRefs.current.forEach((m) => m.setMap(null));
+        markerRefs.current = [];
       };
     }, [mapReady, markers, onPinSelect, selectedStation?.id]);
 

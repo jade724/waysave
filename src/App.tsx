@@ -5,6 +5,7 @@ import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import type { Station } from "./types/station";
 
 import MobileFrame from "./components/layout/MobileFrame";
+import PriceAlertMonitor from "./components/PriceAlertMonitor";
 import PwaUpdateNotifier from "./components/PwaUpdateNotifier";
 import SplashScreen from "./components/screens/SplashScreen";
 import LoginScreen from "./components/screens/LoginScreen";
@@ -23,6 +24,7 @@ const FavoritesScreen = lazy(() => import("./components/screens/FavouritesScreen
 const SettingsScreen = lazy(() => import("./components/screens/SettingsScreen"));
 
 import { useAuth } from "./lib/authContext";
+import { I18nProvider } from "./lib/i18n/i18nContext";
 import { loadPrefs, savePrefs, type UserPreferences } from "./lib/preferences";
 
 export type { Station } from "./types/station";
@@ -121,8 +123,15 @@ export default function App() {
 
   return (
     <MobileFrame>
-      <PwaUpdateNotifier />
-      <div
+      <I18nProvider locale={prefs.locale}>
+        <PwaUpdateNotifier />
+        {isAuthed && session?.user?.id && (
+          <PriceAlertMonitor
+            enabled={prefs.priceAlertsEnabled}
+            userId={session.user.id}
+          />
+        )}
+        <div
         className={`
           w-full flex-1 min-h-0 flex flex-col relative
           transition-opacity duration-150
@@ -210,7 +219,14 @@ export default function App() {
           )}
 
           {displayScreen === "station-update-submitted" && (
-            <StationUpdateSubmittedScreen onBack={() => handleNavigate("map")} />
+            <StationUpdateSubmittedScreen
+              onBack={() => handleNavigate("map")}
+              onBackToStation={
+                selectedStation?.type === "fuel"
+                  ? () => handleNavigate("station-details")
+                  : undefined
+              }
+            />
           )}
         </Suspense>
       </div>
@@ -227,6 +243,7 @@ export default function App() {
           </div>
         </div>
       )}
+      </I18nProvider>
     </MobileFrame>
   );
 }

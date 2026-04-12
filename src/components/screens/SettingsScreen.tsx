@@ -3,7 +3,14 @@
 
 import { useEffect, useState } from "react";
 import { ArrowLeft, Moon, MapPin, Gauge, Bell, Globe, LocateFixed } from "lucide-react";
+import { fetchUserFavorites } from "../../api/favorites";
 import type { UserPreferences } from "../../lib/preferences";
+import { useAuth } from "../../lib/authContext";
+import { useI18n } from "../../lib/i18n/i18nContext";
+import {
+  clearPriceAlertCursor,
+  resetPriceAlertCursorToNow,
+} from "../../lib/priceAlertCursor";
 import { useToast } from "../../lib/toastContext";
 import { devLog } from "../../lib/logger";
 
@@ -25,6 +32,8 @@ function initialLocationPermissionLabel(): string {
 
 export default function SettingsScreen({ onBack, prefs, onPrefsChange }: Props) {
   const distanceUnit = "km";
+  const { user } = useAuth();
+  const { t } = useI18n();
   const { showToast } = useToast();
   const [locationPermissionLabel, setLocationPermissionLabel] = useState(initialLocationPermissionLabel);
 
@@ -81,6 +90,32 @@ export default function SettingsScreen({ onBack, prefs, onPrefsChange }: Props) 
     );
   };
 
+  const handlePriceAlertsToggle = async () => {
+    const next = !prefs.priceAlertsEnabled;
+    if (next) {
+      resetPriceAlertCursorToNow();
+      if (user?.id) {
+        try {
+          const favs = await fetchUserFavorites(user.id);
+          if (favs.length === 0) {
+            showToast(t("price_alerts_favourites_hint"), "info");
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      if (typeof Notification !== "undefined" && Notification.permission === "default") {
+        const perm = await Notification.requestPermission();
+        if (perm === "denied") {
+          showToast(t("price_alerts_permission_denied"), "info");
+        }
+      }
+    } else {
+      clearPriceAlertCursor();
+    }
+    onPrefsChange({ ...prefs, priceAlertsEnabled: next });
+  };
+
   return (
     <div className="w-full h-full bg-[#0D0F14] px-6 pt-7 pb-24 overflow-y-auto">
       {/* Header */}
@@ -89,11 +124,11 @@ export default function SettingsScreen({ onBack, prefs, onPrefsChange }: Props) 
           type="button"
           onClick={onBack}
           className="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center hover:bg-white/10 transition"
-          aria-label="Go back"
+          aria-label={t("settings_back_aria")}
         >
           <ArrowLeft className="w-5 h-5 text-white/80" />
         </button>
-        <h1 className="text-white text-2xl font-bold">Settings</h1>
+        <h1 className="text-white text-2xl font-bold">{t("settings_title")}</h1>
       </div>
 
       {/* Settings Sections */}
@@ -369,18 +404,34 @@ export default function SettingsScreen({ onBack, prefs, onPrefsChange }: Props) 
         <div>
           <h2 className="text-white/60 text-sm font-semibold mb-3 flex items-center gap-2">
             <Bell className="w-4 h-4" />
-            Notifications
+            {t("settings_section_notifications")}
           </h2>
           
           <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden">
-            <div className="p-4 flex items-center justify-between">
-              <div>
-                <p className="text-white font-semibold">Price Alerts</p>
-                <p className="text-white/50 text-xs">Coming soon</p>
+            <div className="p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0 pr-2">
+                <p className="text-white font-semibold">{t("price_alerts_title")}</p>
+                <p className="text-white/50 text-xs mt-0.5 leading-relaxed">
+                  {prefs.priceAlertsEnabled ? t("price_alerts_sub_on") : t("price_alerts_sub_off")}
+                </p>
               </div>
-              <div className="w-12 h-6 rounded-full bg-white/20 relative opacity-50 cursor-not-allowed">
-                <div className="absolute top-1 left-1 w-4 h-4 rounded-full bg-white shadow-lg" />
-              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={prefs.priceAlertsEnabled}
+                onClick={() => void handlePriceAlertsToggle()}
+                className={`w-12 h-7 rounded-full relative shrink-0 transition self-end sm:self-auto ${
+                  prefs.priceAlertsEnabled
+                    ? "bg-gradient-to-r from-[#00E0C6] to-[#0097FF]"
+                    : "bg-white/20"
+                }`}
+              >
+                <span
+                  className={`absolute top-1 w-5 h-5 rounded-full bg-white shadow transition ${
+                    prefs.priceAlertsEnabled ? "left-6" : "left-1"
+                  }`}
+                />
+              </button>
             </div>
           </div>
         </div>
@@ -389,13 +440,31 @@ export default function SettingsScreen({ onBack, prefs, onPrefsChange }: Props) 
         <div>
           <h2 className="text-white/60 text-sm font-semibold mb-3 flex items-center gap-2">
             <Globe className="w-4 h-4" />
-            Language
+            {t("settings_section_language")}
           </h2>
           
           <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden">
-            <div className="w-full p-4 flex items-center justify-between">
-              <span className="text-white font-semibold">App Language</span>
-              <span className="text-white/50">English</span>
+            <div className="w-full p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <span className="text-white font-semibold">{t("language_app")}</span>
+              <div className="flex gap-2 shrink-0">
+                {(["en", "ga"] as const).map((loc) => (
+                  <button
+                    key={loc}
+                    type="button"
+                    onClick={() => onPrefsChange({ ...prefs, locale: loc })}
+                    className={`
+                      px-3 py-2 rounded-xl text-xs font-semibold transition
+                      ${
+                        prefs.locale === loc
+                          ? "bg-gradient-to-r from-[#00E0C6] to-[#0097FF] text-[#0D0F14]"
+                          : "bg-white/5 text-white/60 hover:bg-white/10"
+                      }
+                    `}
+                  >
+                    {loc === "en" ? t("language_en") : t("language_ga")}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         </div>
@@ -403,8 +472,8 @@ export default function SettingsScreen({ onBack, prefs, onPrefsChange }: Props) 
         {/* About */}
         <div className="p-4 rounded-2xl bg-gradient-to-br from-[#00E0C6]/10 to-[#0097FF]/10 border border-[#00E0C6]/20">
           <p className="text-xs text-white/60 leading-relaxed">
-            <strong className="text-white/80">WaySave v1.0.0</strong><br />
-           Settings are saved to this device.
+            <strong className="text-white/80">{t("about_title")}</strong><br />
+            {t("about_body")}
           </p>
         </div>
       </div>

@@ -44,7 +44,7 @@ src/
 │   ├── googlePlaces.ts         # Google Places API wrapper
 │   ├── openChargeMap.ts        # Open Charge Map (prefers Netlify proxy)
 │   ├── favorites.ts            # Supabase favourites CRUD
-│   ├── stationUpdates.ts       # Community price update submissions
+│   ├── priceReports.ts         # Community price reports + optional pump photo (Storage)
 │   └── enrichStationsWithPrices.ts
 ├── components/
 │   ├── layout/                 # MobileFrame, BottomNav
@@ -55,7 +55,7 @@ src/
 └── App.tsx                     # Screen router + global state
 
 netlify/functions/
-├── fetch-fuel-stations.ts      # Proxies Google Places Nearby Search (API key on server)
+├── fetch-fuel-stations.ts      # Proxies Places Nearby Search + Text Search merge (API key on server)
 └── fetch-openchargemap.ts      # Proxies Open Charge Map (OCM key on server)
 ```
 
@@ -125,17 +125,21 @@ create table favorites (
 );
 ```
 
-**`station_updates`**
-```sql
-create table station_updates (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid references auth.users not null,
-  station_name text not null,
-  new_price float not null,
-  note text,
-  created_at timestamptz default now()
-);
-```
+**`price_reports` + Storage (`price-reports` bucket)**
+
+Community fuel prices (and optional pump photos) are stored in **`price_reports`**. Photos go to Supabase Storage bucket **`price-reports`**; object paths must start with the signed-in user’s UUID (see the bundled SQL).
+
+Run the full setup script once in the Supabase SQL editor:
+
+**[`docs/price-reports-and-storage.sql`](docs/price-reports-and-storage.sql)**
+
+That creates the table, RLS policies, and the storage bucket + upload/read policies. If `insert into storage.buckets` fails (permissions), create the **`price-reports`** bucket in the dashboard (public, ~8 MB, image MIME types) and apply only the **`storage.objects`** policy section from the same file.
+
+**Incomplete table / “column station_name does not exist”:** an earlier partial `CREATE TABLE` can leave a wrong `price_reports` shape; `IF NOT EXISTS` then skips the full definition. Run **[`docs/price-reports-fix-partial-table.sql`](docs/price-reports-fix-partial-table.sql)** once (drops the table), then run **`price-reports-and-storage.sql`** again in full.
+
+**Legacy `station_updates`:** older projects may still have this table; the app no longer writes to it. To keep historical rows visible in enrichment, copy them into `price_reports` (column mapping: e.g. `user_id` → `reporter_id`, `new_price` → `price`) or leave them as archive-only. The old helper script **`docs/supabase-station-updates.sql`** applies only if you still maintain `station_updates` outside this app.
+
+**Price submit fails:** missing table/columns, RLS, or Storage policies are the usual causes. The app’s error toasts point at the docs above; check the browser console for the full Supabase error object.
 
 ### Install and Run
 
