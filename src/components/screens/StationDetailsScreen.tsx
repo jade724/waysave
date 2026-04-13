@@ -22,7 +22,11 @@ import GoogleMapBackground from "../map/GoogleMapBackground";
 import { useToast } from "../../lib/toastContext";
 import { useAuth } from "../../lib/authContext";
 import { submitPriceReport } from "../../api/priceReports";
-import type { FuelGrade } from "../../lib/fuelPrices";
+import {
+  type FuelGrade,
+  formatIrelandPumpCentsPerL,
+  parseFuelPriceUserInput,
+} from "../../lib/fuelPrices";
 import { supabase } from "../../lib/supabaseClient";
 import { addFavorite, removeFavorite, isFavorite as checkIsFavorite } from "../../api/favorites";
 
@@ -138,12 +142,15 @@ export default function StationDetailsScreen({
 
     // Per-grade drafts: only fall back to legacy `price_value` when we have no split community prices.
     // Otherwise `price_value` is often min(petrol, diesel) and would wrongly pre-fill the other grade.
-    if (fp?.petrol != null) setPriceDraftPetrol(fp.petrol.toFixed(3));
-    else if (noSplit && station.price_value != null) setPriceDraftPetrol(station.price_value.toFixed(3));
+    // Prefill in pump c/L (same style as cards and forecourt signs), not €/L.
+    if (fp?.petrol != null) setPriceDraftPetrol(formatIrelandPumpCentsPerL(fp.petrol));
+    else if (noSplit && station.price_value != null)
+      setPriceDraftPetrol(formatIrelandPumpCentsPerL(station.price_value));
     else setPriceDraftPetrol("");
 
-    if (fp?.diesel != null) setPriceDraftDiesel(fp.diesel.toFixed(3));
-    else if (noSplit && station.price_value != null) setPriceDraftDiesel(station.price_value.toFixed(3));
+    if (fp?.diesel != null) setPriceDraftDiesel(formatIrelandPumpCentsPerL(fp.diesel));
+    else if (noSplit && station.price_value != null)
+      setPriceDraftDiesel(formatIrelandPumpCentsPerL(station.price_value));
     else setPriceDraftDiesel("");
   }, [station.id, station.price_value, station.fuelPrices]);
 
@@ -238,9 +245,9 @@ export default function StationDetailsScreen({
       }
     }
 
-    const newPrice = Number(draft.replace(",", "."));
-    if (!Number.isFinite(newPrice) || newPrice <= 0) {
-      showToast("Enter a valid price per litre (e.g. 1.549)", "error");
+    const parsed = parseFuelPriceUserInput(draft);
+    if (!parsed.ok) {
+      showToast(parsed.message, "error");
       return;
     }
 
@@ -250,7 +257,7 @@ export default function StationDetailsScreen({
         userId: user.id,
         station,
         fuelGrade: grade,
-        price: newPrice,
+        price: parsed.eurPerL,
         photoFile: grade === "petrol" ? photoPetrol : photoDiesel,
       });
 
@@ -430,7 +437,7 @@ export default function StationDetailsScreen({
           <section className="rounded-3xl border border-[#00E0C6]/20 bg-[#12151c] overflow-hidden">
             <div className="px-5 py-5 border-b border-white/[0.06]">
               <p className="text-[11px] font-semibold uppercase tracking-wider text-white/40 mb-3">
-                Community prices
+                {station.typicalRetailFill ? "Typical retail range" : "Community prices"}
               </p>
               {showBothFuelsNote && (
                 <p className="text-xs text-white/50 leading-relaxed mb-3 rounded-xl bg-white/[0.03] border border-white/[0.06] px-3 py-2">
@@ -447,8 +454,11 @@ export default function StationDetailsScreen({
                       <div>
                         <p className="text-xs text-white/45 mb-1">Petrol</p>
                         <p className="text-3xl font-bold tabular-nums text-[#5eead4] leading-none">
-                          €{station.fuelPrices.petrol.toFixed(2)}
-                          <span className="text-sm text-white/40 font-medium">/L</span>
+                          {formatIrelandPumpCentsPerL(station.fuelPrices.petrol)}
+                          <span className="text-sm text-white/40 font-medium">c/L</span>
+                        </p>
+                        <p className="text-xs text-white/40 mt-1 tabular-nums">
+                          €{station.fuelPrices.petrol.toFixed(3)}/L
                         </p>
                         {petrolReportedIso && (
                           <p className="text-[10px] text-white/35 mt-1.5">
@@ -461,8 +471,11 @@ export default function StationDetailsScreen({
                       <div>
                         <p className="text-xs text-white/45 mb-1">Diesel</p>
                         <p className="text-3xl font-bold tabular-nums text-[#5eead4] leading-none">
-                          €{station.fuelPrices.diesel.toFixed(2)}
-                          <span className="text-sm text-white/40 font-medium">/L</span>
+                          {formatIrelandPumpCentsPerL(station.fuelPrices.diesel)}
+                          <span className="text-sm text-white/40 font-medium">c/L</span>
+                        </p>
+                        <p className="text-xs text-white/40 mt-1 tabular-nums">
+                          €{station.fuelPrices.diesel.toFixed(3)}/L
                         </p>
                         {dieselReportedIso && (
                           <p className="text-[10px] text-white/35 mt-1.5">
@@ -478,12 +491,21 @@ export default function StationDetailsScreen({
                       Community
                     </span>
                   )}
+                  {station.typicalRetailFill && (
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.06] border border-white/10 px-3 py-1 text-xs font-semibold text-white/50 shrink-0">
+                      Typical range
+                    </span>
+                  )}
                 </div>
               ) : station.price_value != null ? (
                 <div className="flex flex-wrap items-end justify-between gap-3">
                   <div>
                     <p className="text-4xl font-bold tabular-nums text-[#5eead4] leading-none">
-                      €{station.price_value.toFixed(2)}
+                      {formatIrelandPumpCentsPerL(station.price_value)}
+                      <span className="text-base text-white/40 font-medium">c/L</span>
+                    </p>
+                    <p className="text-xs text-white/40 mt-1 tabular-nums">
+                      €{station.price_value.toFixed(3)}/L
                     </p>
                     <p className="text-sm text-white/45 mt-2">per litre (unspecified grade)</p>
                   </div>
@@ -500,6 +522,7 @@ export default function StationDetailsScreen({
                 </p>
               )}
               {station.priceSource === "community" &&
+                !station.typicalRetailFill &&
                 station.fuelPrices?.petrol != null &&
                 station.fuelPrices?.diesel != null && (
                   <p className="text-[11px] text-white/40 mt-3">
@@ -507,10 +530,17 @@ export default function StationDetailsScreen({
                     other.
                   </p>
                 )}
-              <p className="text-[11px] text-amber-200/70 mt-3 leading-relaxed">
-                Community prices are <span className="font-medium text-amber-200/90">estimates</span> —
-                always take the price from the pump display before you fill up.
-              </p>
+              {station.typicalRetailFill ? (
+                <p className="text-[11px] text-white/45 mt-3 leading-relaxed">
+                  Figures shown are a typical Irish retail range for this week — not from this
+                  forecourt. Add a report below so everyone sees real pump prices here.
+                </p>
+              ) : (
+                <p className="text-[11px] text-amber-200/70 mt-3 leading-relaxed">
+                  Community prices are <span className="font-medium text-amber-200/90">estimates</span> —
+                  always take the price from the pump display before you fill up.
+                </p>
+              )}
             </div>
 
             <div className="px-5 py-4 bg-white/[0.02] space-y-4">
@@ -521,18 +551,29 @@ export default function StationDetailsScreen({
               </p>
               <div>
                 <label htmlFor="price-draft-petrol" className="text-xs font-medium text-white/50 block mb-2">
-                  Report petrol (€/L)
+                  Report petrol — <span className="text-white/65">c/L</span> as on the pump (e.g. 203.9). Optional:
+                  €/L (e.g. 2.039).
                 </label>
                 <div className="flex gap-2">
-                  <input
-                    id="price-draft-petrol"
-                    type="text"
-                    inputMode="decimal"
-                    placeholder="e.g. 1.549"
-                    value={priceDraftPetrol}
-                    onChange={(e) => setPriceDraftPetrol(e.target.value)}
-                    className="flex-1 min-w-0 rounded-xl border border-white/10 bg-[#0D0F14] px-4 py-3 text-white text-base placeholder:text-white/25 focus:outline-none focus:ring-2 focus:ring-[#00E0C6]/40"
-                  />
+                  <div className="flex flex-1 min-w-0 rounded-xl border border-white/10 bg-[#0D0F14] focus-within:ring-2 focus-within:ring-[#00E0C6]/40 overflow-hidden">
+                    <input
+                      id="price-draft-petrol"
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="203.9"
+                      autoComplete="off"
+                      value={priceDraftPetrol}
+                      onChange={(e) => setPriceDraftPetrol(e.target.value)}
+                      className="flex-1 min-w-0 bg-transparent px-4 py-3 text-white text-base tabular-nums placeholder:text-white/25 focus:outline-none"
+                      aria-describedby="price-draft-petrol-hint"
+                    />
+                    <span
+                      id="price-draft-petrol-suffix"
+                      className="shrink-0 self-center pr-4 text-sm font-medium tabular-nums text-white/40"
+                    >
+                      c/L
+                    </span>
+                  </div>
                   <button
                     type="button"
                     onClick={() => void handleSubmitGrade("petrol")}
@@ -543,6 +584,9 @@ export default function StationDetailsScreen({
                     {submittingGrade === "petrol" ? "…" : "Submit"}
                   </button>
                 </div>
+                <p id="price-draft-petrol-hint" className="mt-1.5 text-[10px] text-white/30 leading-relaxed">
+                  Matches the big digits on the price board. You can still enter euros per litre if you prefer.
+                </p>
                 <div className="mt-2 flex flex-wrap items-center gap-2">
                   <input
                     id="photo-petrol"
@@ -578,18 +622,26 @@ export default function StationDetailsScreen({
               </div>
               <div>
                 <label htmlFor="price-draft-diesel" className="text-xs font-medium text-white/50 block mb-2">
-                  Report diesel (€/L)
+                  Report diesel — <span className="text-white/65">c/L</span> as on the pump (e.g. 208.9). Optional:
+                  €/L (e.g. 2.089).
                 </label>
                 <div className="flex gap-2">
-                  <input
-                    id="price-draft-diesel"
-                    type="text"
-                    inputMode="decimal"
-                    placeholder="e.g. 1.629"
-                    value={priceDraftDiesel}
-                    onChange={(e) => setPriceDraftDiesel(e.target.value)}
-                    className="flex-1 min-w-0 rounded-xl border border-white/10 bg-[#0D0F14] px-4 py-3 text-white text-base placeholder:text-white/25 focus:outline-none focus:ring-2 focus:ring-[#00E0C6]/40"
-                  />
+                  <div className="flex flex-1 min-w-0 rounded-xl border border-white/10 bg-[#0D0F14] focus-within:ring-2 focus-within:ring-[#00E0C6]/40 overflow-hidden">
+                    <input
+                      id="price-draft-diesel"
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="208.9"
+                      autoComplete="off"
+                      value={priceDraftDiesel}
+                      onChange={(e) => setPriceDraftDiesel(e.target.value)}
+                      className="flex-1 min-w-0 bg-transparent px-4 py-3 text-white text-base tabular-nums placeholder:text-white/25 focus:outline-none"
+                      aria-describedby="price-draft-diesel-hint"
+                    />
+                    <span className="shrink-0 self-center pr-4 text-sm font-medium tabular-nums text-white/40">
+                      c/L
+                    </span>
+                  </div>
                   <button
                     type="button"
                     onClick={() => void handleSubmitGrade("diesel")}
@@ -600,6 +652,9 @@ export default function StationDetailsScreen({
                     {submittingGrade === "diesel" ? "…" : "Submit"}
                   </button>
                 </div>
+                <p id="price-draft-diesel-hint" className="mt-1.5 text-[10px] text-white/30 leading-relaxed">
+                  Same format as above the list and on the totem — type what you see.
+                </p>
                 <div className="mt-2 flex flex-wrap items-center gap-2">
                   <input
                     id="photo-diesel"
@@ -637,6 +692,7 @@ export default function StationDetailsScreen({
                 {!user
                   ? "Sign in to submit · "
                   : `Each grade: one update per ${UPDATE_COOLDOWN_MINUTES} min · `}
+                Inputs use <span className="text-white/45">c/L</span> like the station display; €/L still works.
                 Estimates only — always check the pump.
               </p>
             </div>
@@ -808,12 +864,14 @@ export default function StationDetailsScreen({
           <AlertCircle className="text-sky-400 shrink-0 w-5 h-5 mt-0.5" />
           <div>
             <p className="text-sm font-semibold text-white/90">
-              {isEV ? "Before you go" : "Community prices"}
+              {isEV ? "Before you go" : station.typicalRetailFill ? "Typical retail range" : "Community prices"}
             </p>
             <p className="text-xs text-white/50 leading-relaxed mt-1">
               {isEV
                 ? "Power, pricing, and socket availability can change. Use the operator app or on-site info before you travel."
-                : "Fuel prices are crowd-sourced. Always check the pump before you fill up."}
+                : station.typicalRetailFill
+                  ? "Until someone reports from this station, we show a typical national range. Always use the pump display when you fill up."
+                  : "Fuel prices are crowd-sourced. Always check the pump before you fill up."}
             </p>
           </div>
         </div>

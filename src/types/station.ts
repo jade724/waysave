@@ -31,7 +31,10 @@ export interface Station {
     petrol?: string;
     diesel?: string;
   };
+  /** From latest `price_reports` when names match. */
   priceSource?: "community";
+  /** True when petrol/diesel were filled from typical national retail (no community row). */
+  typicalRetailFill?: boolean;
   /** Most recent community `price_reports.created_at` across grades (max of per-grade times). */
   communityPriceUpdatedAt?: string;
 

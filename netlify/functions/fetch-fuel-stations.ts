@@ -86,7 +86,7 @@ const handler: Handler = async (event: HandlerEvent) => {
     let data: GooglePlacesResponse;
     try {
       data = raw ? (JSON.parse(raw) as GooglePlacesResponse) : ({} as GooglePlacesResponse);
-    } catch (parseErr) {
+    } catch {
       console.error("Google Places non-JSON response:", response.status, raw.slice(0, 500));
       return {
         statusCode: 502,

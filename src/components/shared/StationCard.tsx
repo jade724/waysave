@@ -1,7 +1,7 @@
 import { ChevronRight, Fuel, MapPin, Sparkles, Zap } from "lucide-react";
 import type { Station } from "../../types/station";
 import { formatTimeAgo } from "../../lib/formatTimeAgo";
-import { effectiveFuelPriceEurPerL } from "../../lib/fuelPrices";
+import { effectiveFuelPriceEurPerL, formatIrelandPumpCentsPerL } from "../../lib/fuelPrices";
 import type { UserPreferences } from "../../lib/preferences";
 
 interface Props {
@@ -130,8 +130,12 @@ export default function StationCard({
                 <p className="text-[10px] text-white/40 font-medium uppercase tracking-wide">
                   P / D
                 </p>
-                <p className="text-base font-bold tabular-nums text-[#5eead4]">
-                  €{fp.petrol.toFixed(2)} · €{fp.diesel.toFixed(2)}
+                <p
+                  className="text-base font-bold tabular-nums text-[#5eead4]"
+                  title={`€${fp.petrol.toFixed(3)}/L petrol · €${fp.diesel.toFixed(3)}/L diesel`}
+                >
+                  {formatIrelandPumpCentsPerL(fp.petrol)} · {formatIrelandPumpCentsPerL(fp.diesel)}
+                  <span className="text-[10px] font-semibold text-white/40"> c/L</span>
                 </p>
               </div>
               <p className="text-[10px] text-white/35 font-medium">per litre</p>
@@ -145,12 +149,21 @@ export default function StationCard({
                   {formatTimeAgo(station.communityPriceUpdatedAt)}
                 </span>
               )}
+              {station.typicalRetailFill && (
+                <span className="mt-0.5 text-[9px] font-semibold uppercase tracking-wide text-white/40">
+                  Typical range
+                </span>
+              )}
             </>
           )}
           {!isEV && (fp?.petrol == null || fp?.diesel == null) && listPrice != null && (
             <>
-              <p className="text-lg font-bold tabular-nums text-[#5eead4] leading-none">
-                €{listPrice.toFixed(2)}
+              <p
+                className="text-lg font-bold tabular-nums text-[#5eead4] leading-none"
+                title={`€${listPrice.toFixed(3)}/L`}
+              >
+                {formatIrelandPumpCentsPerL(listPrice)}
+                <span className="text-[11px] font-semibold text-white/40"> c/L</span>
               </p>
               <p className="text-[10px] text-white/35 font-medium">per litre</p>
               {station.priceSource === "community" && (

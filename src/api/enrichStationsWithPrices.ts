@@ -32,8 +32,11 @@ export async function enrichWithCommunityPrices(stations: Station[]): Promise<St
 
   const updates = rows as ReportRow[];
 
+  /** Lowercase trimmed key so DB rows match Google Places `name` even if casing differs slightly. */
   const petrolLatest = new Map<string, Latest>();
   const dieselLatest = new Map<string, Latest>();
+
+  const key = (name: string) => name.trim().toLowerCase();
 
   for (const u of updates) {
     const name = u.station_name;
@@ -43,21 +46,23 @@ export async function enrichWithCommunityPrices(stations: Station[]): Promise<St
     const at = u.created_at;
     const grade = u.fuel_grade;
     const entry: Latest = { price, at };
+    const k = key(name);
 
     // App always sends fuel_grade; skip legacy rows without it so one price is never copied to both grades.
     if (grade === null) {
       continue;
     }
     if (grade === "petrol") {
-      if (!petrolLatest.has(name)) petrolLatest.set(name, entry);
+      if (!petrolLatest.has(k)) petrolLatest.set(k, entry);
     } else if (grade === "diesel") {
-      if (!dieselLatest.has(name)) dieselLatest.set(name, entry);
+      if (!dieselLatest.has(k)) dieselLatest.set(k, entry);
     }
   }
 
   return stations.map((station) => {
-    const p = petrolLatest.get(station.name);
-    const d = dieselLatest.get(station.name);
+    const k = key(station.name);
+    const p = petrolLatest.get(k);
+    const d = dieselLatest.get(k);
 
     if (p == null && d == null) return station;
 

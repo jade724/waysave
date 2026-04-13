@@ -29,6 +29,7 @@ import { fetchUserFavorites } from "../../api/favorites";
 import { fetchEVStations, type OCMStation } from "../../api/openChargeMap";
 import { extractOcmChargingDetails } from "../../lib/ocmChargingInfo";
 import { loadFuelStations } from "../../api/fuelStations";
+import { applyTypicalFuelPrices } from "../../api/applyTypicalFuelPrices";
 import { enrichWithCommunityPrices } from "../../api/enrichStationsWithPrices";
 import { calculateDistanceKm } from "../../lib/distance";
 import {
@@ -477,8 +478,7 @@ export default function MapScreen({
           prefs.fuelType
         );
         if (cancelled) return;
-         // Enrich with community-submitted prices from Supabase
-        const enriched = await enrichWithCommunityPrices(data);
+        const enriched = applyTypicalFuelPrices(await enrichWithCommunityPrices(data));
         if (cancelled) return;
         setFuelStations(enriched);
       } catch (err) {

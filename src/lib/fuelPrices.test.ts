@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { effectiveFuelPriceEurPerL } from "./fuelPrices";
+import { effectiveFuelPriceEurPerL, parseFuelPriceUserInput } from "./fuelPrices";
 import type { Station } from "../types/station";
 
 const baseFuel = (over: Partial<Station>): Station => ({
@@ -35,5 +35,23 @@ describe("effectiveFuelPriceEurPerL", () => {
       price_value: 1.5,
     });
     expect(effectiveFuelPriceEurPerL(s, "diesel")).toBeNull();
+  });
+});
+
+describe("parseFuelPriceUserInput", () => {
+  it("accepts €/L (under threshold) and sign-style c/L (e.g. 195.9)", () => {
+    expect(parseFuelPriceUserInput("1.919")).toEqual({ ok: true, eurPerL: 1.919 });
+    expect(parseFuelPriceUserInput("2.55")).toEqual({ ok: true, eurPerL: 2.55 });
+    expect(parseFuelPriceUserInput("191,9")).toEqual({ ok: true, eurPerL: 1.919 });
+    expect(parseFuelPriceUserInput("191.9")).toEqual({ ok: true, eurPerL: 1.919 });
+    expect(parseFuelPriceUserInput("195.9")).toEqual({ ok: true, eurPerL: 1.959 });
+    expect(parseFuelPriceUserInput("208.9")).toEqual({ ok: true, eurPerL: 2.089 });
+    expect(parseFuelPriceUserInput("125")).toEqual({ ok: true, eurPerL: 1.25 });
+  });
+
+  it("rejects out-of-range values", () => {
+    expect(parseFuelPriceUserInput("1.15").ok).toBe(false);
+    expect(parseFuelPriceUserInput("3.01").ok).toBe(false);
+    expect(parseFuelPriceUserInput("115").ok).toBe(false); // 115 c/L → €1.15/L
   });
 });

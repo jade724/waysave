@@ -6,6 +6,8 @@ import { useState, useEffect } from "react";
 import { useAuth } from "../../lib/authContext";
 import { useToast } from "../../lib/toastContext";
 import { fetchUserFavorites, removeFavorite } from "../../api/favorites";
+import { applyTypicalFuelPrices } from "../../api/applyTypicalFuelPrices";
+import { enrichWithCommunityPrices } from "../../api/enrichStationsWithPrices";
 import { calculateDistanceKm } from "../../lib/distance";
 import type { Station } from "../../types/station";
 
@@ -44,8 +46,9 @@ export default function FavoritesScreen({ onBack, onStationClick }: Props) {
     const loadFavorites = async () => {
       setLoading(true);
       try {
-        const data = await fetchUserFavorites(user.id);
-        
+        const raw = await fetchUserFavorites(user.id);
+        const data = applyTypicalFuelPrices(await enrichWithCommunityPrices(raw));
+
         // Calculate distances if location available
         if (userLocation) {
           data.forEach((station) => {
