@@ -34,6 +34,7 @@ import { enrichWithCommunityPrices } from "../../api/enrichStationsWithPrices";
 import { calculateDistanceKm } from "../../lib/distance";
 import {
   effectiveEVSearchRadiusKm,
+  filterEvStationsByHardwarePrefs,
   matchesFuelTypeFilter,
   selectRouteIndexForSearchPreference,
 } from "../../lib/stationFilters";
@@ -436,6 +437,8 @@ export default function MapScreen({
               ev.AddressInfo.Longitude
             ),
             evMaxPowerKw: ocm.maxPowerKw,
+            evHasAc: ocm.hasAC,
+            evHasDc: ocm.hasDC,
             evUsageCostHint: ocm.usageCost,
             evOperatorWebsiteUrl: ocm.operatorWebsiteUrl,
             raw: ev,
@@ -505,9 +508,13 @@ export default function MapScreen({
     () => rankStations(fuelStations, prefs, "fuel"),
     [fuelStations, prefs]
   );
-  const evRanked = useMemo(
-    () => rankStations(evStations, prefs, "ev"),
+  const evAfterHardware = useMemo(
+    () => filterEvStationsByHardwarePrefs(evStations, prefs),
     [evStations, prefs]
+  );
+  const evRanked = useMemo(
+    () => rankStations(evAfterHardware, prefs, "ev"),
+    [evAfterHardware, prefs]
   );
 
   const rankedStations = useMemo(() => {

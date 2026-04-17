@@ -40,6 +40,10 @@ export interface Station {
 
   /** EV: highest connector power from OCM (kW), for list cards. */
   evMaxPowerKw?: number | null;
+  /** EV: OCM-derived — site has at least one AC-style connection. */
+  evHasAc?: boolean;
+  /** EV: OCM-derived — site has at least one DC-style connection. */
+  evHasDc?: boolean;
   /**
    * EV: OCM free-text `UsageCost` when the operator reported it (often empty).
    * Not a guaranteed €/kWh — show as-is; detail screen has the full string.

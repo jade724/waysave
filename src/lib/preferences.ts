@@ -13,6 +13,9 @@ export type ConnectorFilters = {
   Type2: boolean;
 };
 
+/** Upper bound for the EV “minimum kW” filter slider (UI only). */
+export const EV_FILTER_MAX_KW = 350;
+
 // All user-configurable preferences stored locally.
 export type UserPreferences = {
   // Which tab is currently active in the UI.
@@ -23,6 +26,13 @@ export type UserPreferences = {
 
   // EV connector filters.
   connectors: ConnectorFilters;
+
+  /** EV: hide chargers whose reported max power is below this (0 = no minimum). */
+  evMinPowerKw: number;
+  /** EV: only show sites that include at least one AC connection (e.g. Type 2). */
+  evRequireAc: boolean;
+  /** EV: only show sites that include at least one DC connection (e.g. CCS). */
+  evRequireDc: boolean;
 
   // Rank/sort strategy for station lists.
   preference: PreferenceMode;
@@ -52,6 +62,9 @@ export const DEFAULT_PREFS: UserPreferences = {
   activeTab: "fuel",
   fuelType: null, // ✅ default to "Any" so EV users aren’t forced
   connectors: { CCS: true, CHAdeMO: false, Type2: true },
+  evMinPowerKw: 0,
+  evRequireAc: false,
+  evRequireDc: false,
   preference: "nearest",
   maxDistanceKm: 30,
   priceSensitivity: 0.5,
@@ -75,6 +88,15 @@ function mergePrefs(parsed: Partial<UserPreferences>): UserPreferences {
       ...DEFAULT_PREFS.connectors,
       ...(parsed.connectors ?? {}),
     },
+    evMinPowerKw: (() => {
+      const v = parsed.evMinPowerKw;
+      if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+        return DEFAULT_PREFS.evMinPowerKw;
+      }
+      return Math.min(v, EV_FILTER_MAX_KW);
+    })(),
+    evRequireAc: Boolean(parsed.evRequireAc),
+    evRequireDc: Boolean(parsed.evRequireDc),
     locationHighAccuracy: parsed.locationHighAccuracy ?? DEFAULT_PREFS.locationHighAccuracy,
     locationLiveUpdates: parsed.locationLiveUpdates ?? DEFAULT_PREFS.locationLiveUpdates,
     locationAutoFollowOnRoute:

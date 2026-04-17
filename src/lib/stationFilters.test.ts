@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_PREFS } from "./preferences";
 import {
   effectiveEVSearchRadiusKm,
   effectiveSearchRadiusKm,
+  matchesEvHardwareFilters,
   matchesFuelTypeFilter,
 } from "./stationFilters";
 import type { Station } from "../types/station";
@@ -50,5 +52,64 @@ describe("matchesFuelTypeFilter", () => {
 
   it("matches petrol filter for both-only forecourts", () => {
     expect(matchesFuelTypeFilter({ ...base, fuelTypes: "both" }, "petrol")).toBe(true);
+  });
+});
+
+describe("matchesEvHardwareFilters", () => {
+  const ev = (partial: Partial<Station>): Station => ({
+    id: "ev1",
+    name: "Charger",
+    lat: 0,
+    lng: 0,
+    type: "ev",
+    evMaxPowerKw: 50,
+    evHasAc: true,
+    evHasDc: true,
+    ...partial,
+  });
+
+  const prefs = { ...DEFAULT_PREFS };
+
+  it("allows any fuel station", () => {
+    expect(
+      matchesEvHardwareFilters(
+        { id: "f", name: "Fuel", lat: 0, lng: 0, type: "fuel" },
+        prefs
+      )
+    ).toBe(true);
+  });
+
+  it("filters by minimum kW", () => {
+    expect(matchesEvHardwareFilters(ev({ evMaxPowerKw: 50 }), { ...prefs, evMinPowerKw: 49 })).toBe(
+      true
+    );
+    expect(matchesEvHardwareFilters(ev({ evMaxPowerKw: 50 }), { ...prefs, evMinPowerKw: 51 })).toBe(
+      false
+    );
+    expect(matchesEvHardwareFilters(ev({ evMaxPowerKw: null }), { ...prefs, evMinPowerKw: 1 })).toBe(
+      false
+    );
+  });
+
+  it("filters by AC/DC requirements", () => {
+    expect(
+      matchesEvHardwareFilters(ev({ evHasAc: false, evHasDc: true }), {
+        ...prefs,
+        evRequireAc: true,
+      })
+    ).toBe(false);
+    expect(
+      matchesEvHardwareFilters(ev({ evHasAc: true, evHasDc: false }), {
+        ...prefs,
+        evRequireDc: true,
+      })
+    ).toBe(false);
+    expect(
+      matchesEvHardwareFilters(ev({ evHasAc: true, evHasDc: true }), {
+        ...prefs,
+        evRequireAc: true,
+        evRequireDc: true,
+      })
+    ).toBe(true);
   });
 });

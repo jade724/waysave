@@ -20,7 +20,7 @@ const en = {
   open_map_sub: "Stations, routes, and live traffic",
 
   filters_card_title: "Filters",
-  filters_card_sub: "Distance, fuel type, EV plugs",
+  filters_card_sub: "Fuel & EV sections — switch with the tabs at the top",
 
   favourites_card_title: "Favourites",
   favourites_card_sub: "Saved stations",
@@ -103,7 +103,7 @@ const ga: Record<MessageKey, string> = {
   open_map_sub: "Stáisiúin, bealaí, agus tráchta beo",
 
   filters_card_title: "Scagairí",
-  filters_card_sub: "Fad, cineál breosla, agus plocóid EV",
+  filters_card_sub: "Ranna breosla & EV — athraigh le cluaisíní ag barr",
 
   favourites_card_title: "Ceanáin",
   favourites_card_sub: "Stáisiúin shábháilte",

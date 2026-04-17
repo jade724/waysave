@@ -177,6 +177,7 @@ export default function App() {
 
           {displayScreen === "filters" && (
             <FilterScreen
+              mode={prefs.activeTab}
               initial={prefs}
               onApply={applyPrefs}
               onClose={() => handleNavigate("map")}

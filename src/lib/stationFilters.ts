@@ -1,5 +1,44 @@
 import type { FuelTypeFilter, UserPreferences } from "./preferences";
 import type { Station } from "../types/station";
+import { extractOcmChargingDetails } from "./ocmChargingInfo";
+
+function evAcDcFlags(station: Station): { ac: boolean; dc: boolean } {
+  if (station.type !== "ev") return { ac: false, dc: false };
+  if (station.evHasAc != null || station.evHasDc != null) {
+    return { ac: Boolean(station.evHasAc), dc: Boolean(station.evHasDc) };
+  }
+  const d = station.raw ? extractOcmChargingDetails(station.raw) : null;
+  return { ac: d?.hasAC ?? false, dc: d?.hasDC ?? false };
+}
+
+/**
+ * EV list/map filter: minimum reported max kW and optional AC/DC requirements.
+ * Fuel stations always pass.
+ */
+export function matchesEvHardwareFilters(
+  station: Station,
+  prefs: UserPreferences
+): boolean {
+  if (station.type !== "ev") return true;
+
+  const minKw = prefs.evMinPowerKw;
+  if (minKw > 0) {
+    const max = station.evMaxPowerKw;
+    if (max == null || max < minKw) return false;
+  }
+
+  const { ac, dc } = evAcDcFlags(station);
+  if (prefs.evRequireDc && !dc) return false;
+  if (prefs.evRequireAc && !ac) return false;
+  return true;
+}
+
+export function filterEvStationsByHardwarePrefs(
+  stations: Station[],
+  prefs: UserPreferences
+): Station[] {
+  return stations.filter((s) => matchesEvHardwareFilters(s, prefs));
+}
 
 /** Google Places nearby search is capped at 50 km radius. */
 export function effectiveSearchRadiusKm(maxDistanceKm: number | undefined): number {
