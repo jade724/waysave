@@ -1,3 +1,0 @@
--- Superseded by: seed-fuel-prices-from-snapshot.sql
--- (includes station_updates + price_reports + your user id)
--- See that file for the full script.
