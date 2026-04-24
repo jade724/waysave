@@ -1,6 +1,8 @@
 // src/api/googlePlaces.ts
 // Use Netlify serverless function to bypass CORS
 
+import type { Station } from "../types/station";
+
 const BACKEND_URL = import.meta.env.DEV 
   ? "http://localhost:8888/.netlify/functions" 
   : "/.netlify/functions";
@@ -128,7 +130,7 @@ function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-export function formatGooglePlaceToStation(place: GooglePlaceResult): any {
+export function formatGooglePlaceToStation(place: GooglePlaceResult): Station {
  
   return {
     id: place.place_id,

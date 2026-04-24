@@ -49,7 +49,7 @@ export async function loadFuelStations(
     if (googlePlaces.length > 0) {
       const stations = googlePlaces.map(formatGooglePlaceToStation);
       
-      stations.forEach((station: any) => {
+      stations.forEach((station: Station) => {
         station.distance_km = calculateDistanceKm(
           userLat,
           userLng,

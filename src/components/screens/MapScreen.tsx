@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import type { VirtualItem } from "@tanstack/react-virtual";
 import {
   Fuel,
   Zap,
@@ -1371,7 +1372,7 @@ export default function MapScreen({
                       className="relative w-full"
                       style={{ height: rowVirtualizer.getTotalSize() }}
                     >
-                      {rowVirtualizer.getVirtualItems().map((vi) => {
+                      {rowVirtualizer.getVirtualItems().map((vi: VirtualItem) => {
                         const station = listStations[vi.index];
                         const routeActive =
                           selectedStationForRoute?.id === station.id && showRoute;
